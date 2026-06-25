@@ -7,9 +7,6 @@
 1. Создать пользователей в Supabase Authentication:
    - `owner@optiai.ru`
    - `rop@optiai.ru`
-   - `anna@optiai.ru`
-   - `ilya@optiai.ru`
-   - `sofia@optiai.ru`
 
 2. В `auth.users.raw_app_meta_data` добавить роль:
 

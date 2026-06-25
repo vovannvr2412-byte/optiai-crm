@@ -1,4 +1,6 @@
 import { pbkdf2Sync, randomBytes, timingSafeEqual } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import path from "node:path";
 import type { CrmUser } from "@/lib/crm/types";
 
 type Credential = {
@@ -9,20 +11,34 @@ type Credential = {
 };
 
 const globalForCredentials = globalThis as unknown as { optiaiCredentials?: Map<string, Credential> };
+const dataDir = path.join(process.cwd(), "data");
+const credentialsFile = path.join(dataDir, "credentials.json");
 
 const demoPasswords: Record<string, string> = {
   "owner@optiai.ru": "Owner2026!",
-  "rop@optiai.ru": "Rop2026!",
-  "anna@optiai.ru": "Anna2026!",
-  "ilya@optiai.ru": "Ilya2026!",
-  "sofia@optiai.ru": "Sofia2026!"
+  "rop@optiai.ru": "Rop2026!"
 };
 
 function credentials() {
   if (!globalForCredentials.optiaiCredentials) {
-    globalForCredentials.optiaiCredentials = new Map();
+    globalForCredentials.optiaiCredentials = readPersistedCredentials();
   }
   return globalForCredentials.optiaiCredentials;
+}
+
+function readPersistedCredentials() {
+  if (!existsSync(credentialsFile)) return new Map<string, Credential>();
+  try {
+    const list = JSON.parse(readFileSync(credentialsFile, "utf8")) as Credential[];
+    return new Map(list.map((credential) => [normalizeEmail(credential.email), credential]));
+  } catch {
+    return new Map<string, Credential>();
+  }
+}
+
+function persistCredentials() {
+  mkdirSync(dataDir, { recursive: true });
+  writeFileSync(credentialsFile, JSON.stringify([...credentials().values()], null, 2), "utf8");
 }
 
 function normalizeEmail(email: string) {
@@ -35,15 +51,23 @@ function hashPassword(password: string, salt: string) {
 
 export function ensureCredentials(users: CrmUser[]) {
   const store = credentials();
+  let changed = false;
   users.forEach((user) => {
     const email = normalizeEmail(user.email);
     if (!store.has(email)) {
-      registerCredential(user.id, email, demoPasswords[email] ?? "OptiAI2026!");
+      setCredential(user.id, email, demoPasswords[email] ?? "OptiAI2026!");
+      changed = true;
     }
   });
+  if (changed) persistCredentials();
 }
 
 export function registerCredential(userId: string, email: string, password: string) {
+  setCredential(userId, email, password);
+  persistCredentials();
+}
+
+function setCredential(userId: string, email: string, password: string) {
   const normalized = normalizeEmail(email);
   const salt = randomBytes(16).toString("hex");
   credentials().set(normalized, {
@@ -56,6 +80,7 @@ export function registerCredential(userId: string, email: string, password: stri
 
 export function disableCredential(email: string) {
   credentials().delete(normalizeEmail(email));
+  persistCredentials();
 }
 
 export function verifyCredential(email: string, password: string) {

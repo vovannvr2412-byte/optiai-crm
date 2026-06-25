@@ -4,9 +4,7 @@ const now = "2026-06-25T00:00:00.000Z";
 
 export const seedUsers: CrmUser[] = [
   { id: "u-owner", fullName: "Владимир Орлов", email: "owner@optiai.ru", role: "Руководитель", position: "CEO OptiAI", status: "active", calls: 0, meetings: 0, revenue: 0, conversion: 0, createdAt: now },
-  { id: "u-rop", fullName: "Екатерина Нечаева", email: "rop@optiai.ru", role: "РОП", position: "Руководитель отдела продаж", status: "active", calls: 0, meetings: 0, revenue: 0, conversion: 0, createdAt: now },
-  { id: "u-anna", fullName: "Анна Власова", email: "anna@optiai.ru", role: "Менеджер", position: "Менеджер по продажам", status: "active", calls: 0, meetings: 0, revenue: 0, conversion: 0, createdAt: now },
-  { id: "u-sofia", fullName: "София Лебедева", email: "sofia@optiai.ru", role: "Аккаунт-менеджер", position: "Аккаунт-менеджер", status: "active", calls: 0, meetings: 0, revenue: 0, conversion: 0, createdAt: now }
+  { id: "u-rop", fullName: "Екатерина Нечаева", email: "rop@optiai.ru", role: "РОП", position: "Руководитель отдела продаж", status: "active", calls: 0, meetings: 0, revenue: 0, conversion: 0, createdAt: now }
 ];
 
 export const seedTariffs: Tariff[] = [

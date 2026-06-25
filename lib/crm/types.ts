@@ -172,6 +172,7 @@ export type CrmAction =
   | { type: "move_stage"; payload: { leadId: string; stage: number } }
   | { type: "assign_lead"; payload: { leadId: string; ownerId: string } }
   | { type: "record_call"; payload: { leadId: string; ownerId: string } }
+  | { type: "mark_no_answer"; payload: { leadId: string; ownerId: string } }
   | { type: "send_message"; payload: { leadId: string; channel: string; text: string } }
   | { type: "start_warmup"; payload: { leadId: string; sequenceId: string } }
   | { type: "create_warmup_step"; payload: { sequenceId: string; day: number; title: string; message: string } }

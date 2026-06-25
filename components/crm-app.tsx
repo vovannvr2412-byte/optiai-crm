@@ -12,12 +12,12 @@ import {
   ChevronRight,
   Flame,
   LayoutDashboard,
+  LogOut,
   MessageSquare,
   PhoneCall,
   Plus,
   Search,
   ShieldCheck,
-  Sparkles,
   UsersRound
 } from "lucide-react";
 import { ROLE_PERMISSIONS, STAGES, VIEW_TITLES, type CrmAction, type CrmState, type CrmUser, type Lead, type Role, type ViewId } from "@/lib/crm/types";
@@ -74,6 +74,11 @@ function initials(name: string) {
     .map((part) => part[0])
     .join("")
     .slice(0, 2);
+}
+
+function phoneHref(phone: string) {
+  const normalized = phone.replace(/[^\d+]/g, "");
+  return normalized ? `tel:${normalized}` : "#";
 }
 
 export function CrmApp() {
@@ -135,6 +140,7 @@ export function CrmApp() {
   const metrics = bootstrap?.metrics;
   const currentUser = bootstrap?.currentUser;
   const allowedViews = currentUser ? ROLE_PERMISSIONS[currentUser.role] : ROLE_PERMISSIONS["Руководитель"];
+  const canCreateUsers = currentUser?.role === "Руководитель" || currentUser?.role === "РОП";
 
   useEffect(() => {
     if (!allowedViews.includes(activeView)) setActiveView(allowedViews[0]);
@@ -215,6 +221,18 @@ export function CrmApp() {
             ))}
         </nav>
 
+        <button
+          aria-label="Выйти из аккаунта"
+          title="Выйти"
+          onClick={async () => {
+            await fetch("/api/auth/logout", { method: "POST" });
+            setBootstrap(null);
+          }}
+          className="mt-3 hidden size-11 place-items-center rounded-lg border border-white/10 bg-white/10 text-stone-100 hover:bg-white/15 max-lg:grid"
+        >
+          <LogOut size={19} />
+        </button>
+
         <div className="mt-auto rounded-lg border border-white/10 bg-white/5 p-3 max-lg:hidden">
           <span className="text-xs uppercase text-stone-400">Вы вошли как</span>
           <strong className="mt-2 block text-sm text-white">{currentUser.fullName}</strong>
@@ -246,9 +264,15 @@ export function CrmApp() {
               <Search size={18} className="text-stone-500" />
               <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Компания, контакт, канал" className="w-full bg-transparent outline-none" />
             </div>
-            <button onClick={() => selectedLead && void runAction({ type: "record_call", payload: { leadId: selectedLead.id, ownerId: currentUser.id } }, "Звонок записан, AI обновил карточку.")} className="grid size-11 place-items-center rounded-lg border border-stone-200 bg-white text-stone-900">
-              <Sparkles size={19} />
-            </button>
+            <a
+              href={selectedLead ? phoneHref(selectedLead.phone) : "#"}
+              onClick={() => selectedLead && void runAction({ type: "record_call", payload: { leadId: selectedLead.id, ownerId: currentUser.id } }, "Звонок открыт на устройстве, CRM зафиксировала касание.")}
+              className="grid size-11 place-items-center rounded-lg border border-stone-200 bg-white text-stone-900"
+              aria-label="Позвонить текущему лиду"
+              title="Позвонить"
+            >
+              <PhoneCall size={19} />
+            </a>
             <button onClick={() => setModal("newLead")} className="flex min-h-11 items-center gap-2 rounded-lg bg-stone-950 px-4 font-bold text-white">
               <Plus size={18} /> Новый лид
             </button>
@@ -344,6 +368,7 @@ export function CrmApp() {
                   <div className="mt-3 flex gap-2">
                             <button disabled={loadingAction || lead.stage >= 12} onClick={() => void runAction({ type: "move_stage", payload: { leadId: lead.id, stage: Math.min(12, lead.stage + 1) } }, `${lead.companyName}: этап обновлен.`)} className="rounded-md bg-teal-50 px-2 py-1 text-xs font-bold text-teal-800">Следующий</button>
                             <button onClick={() => openLead(lead, "callcenter")} className="rounded-md bg-stone-100 px-2 py-1 text-xs font-bold text-stone-800">Звонок</button>
+                            <button onClick={() => void runAction({ type: "mark_no_answer", payload: { leadId: lead.id, ownerId: lead.ownerId } }, "Недозвон зафиксирован: задачи на 1, 3 и 7 дней поставлены.")} className="rounded-md bg-amber-100 px-2 py-1 text-xs font-bold text-amber-900">Не дозвон</button>
                   </div>
                 </article>
               ))}
@@ -380,7 +405,10 @@ export function CrmApp() {
                       <strong className="block">{lead.companyName}</strong>
                       <span className="text-sm text-stone-600">{lead.phone} · {lead.nextStep}</span>
                     </button>
-                    <button onClick={() => void runAction({ type: "record_call", payload: { leadId: lead.id, ownerId: currentUser.id } }, "Звонок завершен, AI-summary добавлено.")} className="rounded-lg bg-teal-600 px-3 py-2 font-bold text-white">Звонок</button>
+                    <div className="flex flex-wrap justify-end gap-2">
+                      <a href={phoneHref(lead.phone)} onClick={() => void runAction({ type: "record_call", payload: { leadId: lead.id, ownerId: currentUser.id } }, "Звонок открыт на устройстве, CRM зафиксировала касание.")} className="rounded-lg bg-teal-600 px-3 py-2 font-bold text-white">Звонок</a>
+                      <button onClick={() => void runAction({ type: "mark_no_answer", payload: { leadId: lead.id, ownerId: lead.ownerId } }, "Недозвон зафиксирован: задачи на 1, 3 и 7 дней поставлены.")} className="rounded-lg bg-amber-100 px-3 py-2 font-bold text-amber-900">Не дозвонились</button>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -470,12 +498,12 @@ export function CrmApp() {
             <div className="grid grid-cols-[1.2fr_.8fr] gap-4 max-xl:grid-cols-1">
               <Panel
                 title="Аккаунты сотрудников"
-                subtitle="Добавление руководителей, РОПов, менеджеров и аккаунт-менеджеров выполняет только руководитель."
+                subtitle="Руководитель управляет всеми ролями. РОП может добавлять менеджеров и аккаунт-менеджеров."
                 action={
-                  currentUser.role === "Руководитель" ? (
+                  canCreateUsers ? (
                     <button onClick={() => setModal("newUser")} className="rounded-lg bg-stone-950 px-3 py-2 font-bold text-white">Добавить сотрудника</button>
                   ) : (
-                    <span className="rounded-lg bg-stone-100 px-3 py-2 text-sm font-bold text-stone-600">Создает только руководитель</span>
+                    <span className="rounded-lg bg-stone-100 px-3 py-2 text-sm font-bold text-stone-600">Создает руководитель или РОП</span>
                   )
                 }
               >
@@ -576,7 +604,7 @@ export function CrmApp() {
 
       {modal && (
         <ModalShell onClose={() => setModal(null)}>
-          {modal === "newUser" && <NewUserForm onSubmit={(action) => { setModal(null); void runAction(action, "Аккаунт создан."); }} />}
+          {modal === "newUser" && <NewUserForm currentUser={currentUser} onSubmit={(action) => { setModal(null); void runAction(action, "Аккаунт создан."); }} />}
           {modal === "newLead" && <NewLeadForm state={state} onSubmit={(action) => { setModal(null); void runAction(action, "Лид создан и задача поставлена."); }} />}
           {modal === "warmupStep" && <WarmupForm sequenceId={state.warmupSequences[0]?.id} onSubmit={(action) => { setModal(null); void runAction(action, "Шаг прогрева добавлен."); }} />}
           {modal === "refusal" && selectedLead && <RefusalForm leadId={selectedLead.id} onSubmit={(action) => { setModal(null); void runAction(action, "Отказ сохранен с причиной."); }} />}
@@ -728,7 +756,8 @@ function LeadView({ lead, state, userName, tariffName, onAction, onRefusal }: { 
             ))}
           </div>
           <div className="mt-4 flex flex-wrap gap-2">
-            <button onClick={() => void onAction({ type: "record_call", payload: { leadId: lead.id, ownerId: lead.ownerId } }, "Звонок обработан AI.")} className="rounded-lg bg-teal-600 px-3 py-2 font-bold text-white">Позвонить</button>
+            <a href={phoneHref(lead.phone)} onClick={() => void onAction({ type: "record_call", payload: { leadId: lead.id, ownerId: lead.ownerId } }, "Звонок открыт на устройстве, CRM зафиксировала касание.")} className="rounded-lg bg-teal-600 px-3 py-2 font-bold text-white">Позвонить</a>
+            <button onClick={() => void onAction({ type: "mark_no_answer", payload: { leadId: lead.id, ownerId: lead.ownerId } }, "Недозвон зафиксирован: задачи на 1, 3 и 7 дней поставлены.")} className="rounded-lg bg-amber-100 px-3 py-2 font-bold text-amber-900">Не дозвонились</button>
             <button onClick={() => void onAction({ type: "send_message", payload: { leadId: lead.id, channel: "Telegram", text: "Отправлено персональное касание из CRM." } }, "Сообщение отправлено.")} className="rounded-lg bg-stone-100 px-3 py-2 font-bold">Сообщение</button>
             <button onClick={() => void onAction({ type: "start_warmup", payload: { leadId: lead.id, sequenceId: state.warmupSequences[0].id } }, "Прогрев запущен.")} className="rounded-lg bg-amber-100 px-3 py-2 font-bold text-amber-900">Прогрев</button>
             <button onClick={() => void onAction({ type: "mark_paid", payload: { leadId: lead.id, tariffId: lead.tariffId ?? state.tariffs[0].id } }, "Оплата отмечена.")} className="rounded-lg bg-lime-100 px-3 py-2 font-bold text-lime-900">Оплата</button>
@@ -799,7 +828,11 @@ function ModalShell({ children, onClose }: { children: React.ReactNode; onClose:
   );
 }
 
-function NewUserForm({ onSubmit }: { onSubmit: (action: CrmAction) => void }) {
+function NewUserForm({ currentUser, onSubmit }: { currentUser: CrmUser; onSubmit: (action: CrmAction) => void }) {
+  const allowedRoles: Role[] = currentUser.role === "Руководитель"
+    ? ["Менеджер", "Аккаунт-менеджер", "РОП", "Руководитель"]
+    : ["Менеджер", "Аккаунт-менеджер"];
+
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const data = Object.fromEntries(new FormData(event.currentTarget).entries()) as Record<string, string>;
@@ -815,10 +848,7 @@ function NewUserForm({ onSubmit }: { onSubmit: (action: CrmAction) => void }) {
       <label className="grid gap-1 text-sm font-bold text-stone-600">
         Роль
         <select name="role" className="rounded-lg border border-stone-200 px-3 py-2 text-stone-950">
-          <option>Менеджер</option>
-          <option>Аккаунт-менеджер</option>
-          <option>РОП</option>
-          <option>Руководитель</option>
+          {allowedRoles.map((role) => <option key={role}>{role}</option>)}
         </select>
       </label>
       <FormInput name="position" label="Должность" required />

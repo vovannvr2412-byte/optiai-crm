@@ -1,8 +1,50 @@
 import { createSeedState } from "./seed";
 import { disableCredential, registerCredential } from "@/lib/auth/credentials";
 import { STAGES, type CrmAction, type CrmState, type Lead, type LeadTemperature, type Role } from "./types";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import path from "node:path";
 
 const globalForCrm = globalThis as unknown as { optiCrmState?: CrmState };
+const dataDir = path.join(process.cwd(), "data");
+const stateFile = path.join(dataDir, "crm-state.json");
+const retiredSeedUserIds = new Set(["u-anna", "u-sofia", "u-ilya"]);
+const retiredSeedUserEmails = ["anna@optiai.ru", "sofia@optiai.ru", "ilya@optiai.ru"];
+
+function readPersistedState() {
+  if (!existsSync(stateFile)) return null;
+  try {
+    return JSON.parse(readFileSync(stateFile, "utf8")) as CrmState;
+  } catch {
+    return null;
+  }
+}
+
+function persistState(state: CrmState) {
+  mkdirSync(dataDir, { recursive: true });
+  writeFileSync(stateFile, JSON.stringify(state, null, 2), "utf8");
+}
+
+function migrateState(state: CrmState) {
+  let changed = false;
+  const retiredUsers = state.users.filter((user) => retiredSeedUserIds.has(user.id));
+  if (retiredUsers.length === 0) return { state, changed };
+
+  const retiredIds = new Set(retiredUsers.map((user) => user.id));
+  const fallback = state.users.find((user) => user.role === "РОП" && user.status === "active" && !retiredIds.has(user.id))
+    ?? state.users.find((user) => user.role === "Руководитель" && user.status === "active");
+
+  state.leads.forEach((lead) => {
+    if (retiredIds.has(lead.ownerId)) {
+      lead.ownerId = fallback?.id ?? "";
+      changed = true;
+    }
+  });
+  state.tasks = state.tasks.filter((task) => !retiredIds.has(task.ownerId));
+  state.callRecords = state.callRecords.filter((call) => !retiredIds.has(call.ownerId));
+  state.users = state.users.filter((user) => !retiredIds.has(user.id));
+  retiredSeedUserEmails.forEach((email) => disableCredential(email));
+  return { state, changed: true };
+}
 
 function id(prefix: string) {
   return `${prefix}-${Math.random().toString(36).slice(2, 8)}-${Date.now().toString(36)}`;
@@ -20,13 +62,16 @@ function dateOnly(daysFromNow = 0) {
 
 export function getCrmState(): CrmState {
   if (!globalForCrm.optiCrmState) {
-    globalForCrm.optiCrmState = createSeedState();
+    const migrated = migrateState(readPersistedState() ?? createSeedState());
+    globalForCrm.optiCrmState = migrated.state;
+    persistState(globalForCrm.optiCrmState);
   }
   return globalForCrm.optiCrmState;
 }
 
 export function resetCrmState() {
   globalForCrm.optiCrmState = createSeedState();
+  persistState(globalForCrm.optiCrmState);
   return getCrmState();
 }
 
@@ -59,7 +104,7 @@ export function scopedStateFor(userId: string): CrmState {
   const user = state.users.find((item) => item.id === userId);
   if (!user || user.role === "Руководитель" || user.role === "РОП") return state;
   if (user.role === "Менеджер") {
-    const allowedLeadIds = new Set(state.leads.filter((lead) => lead.ownerId === user.id && lead.status !== "client").map((lead) => lead.id));
+    const allowedLeadIds = new Set(state.leads.filter((lead) => lead.ownerId === user.id).map((lead) => lead.id));
     return filterStateByLeads(state, allowedLeadIds, user.role);
   }
   const allowedLeadIds = new Set(state.leads.filter((lead) => lead.ownerId === user.id && lead.status === "client").map((lead) => lead.id));
@@ -85,6 +130,23 @@ function addActivity(state: CrmState, leadId: string, type: CrmState["activities
 
 function addTask(state: CrmState, leadId: string, ownerId: string, title: string, daysFromNow: number, priority: "high" | "medium" | "low", automationKey?: string) {
   state.tasks.unshift({ id: id("task"), leadId, ownerId, title, dueAt: dateOnly(daysFromNow), priority, status: "open", automationKey });
+}
+
+function scheduleNoAnswerFollowUps(state: CrmState, lead: Lead, ownerId: string) {
+  state.tasks = state.tasks.filter((task) => !(task.leadId === lead.id && task.automationKey === "missed_call" && task.status === "open"));
+  [
+    { days: 1, priority: "high" as const },
+    { days: 3, priority: "medium" as const },
+    { days: 7, priority: "medium" as const }
+  ].forEach(({ days, priority }) => {
+    const dayLabel = days === 1 ? "день" : days === 3 ? "дня" : "дней";
+    addTask(state, lead.id, ownerId, `Перезвонить через ${days} ${dayLabel}`, days, priority, "missed_call");
+    addActivity(state, lead.id, "task", `Уведомление: перезвон через ${days} ${dayLabel}`, `CRM поставила задачу ответственному: ${dateLabelForTask(days)}.`);
+  });
+}
+
+function dateLabelForTask(daysFromNow: number) {
+  return new Intl.DateTimeFormat("ru-RU", { day: "2-digit", month: "long", year: "numeric" }).format(new Date(dateOnly(daysFromNow)));
 }
 
 export function applyCrmAction(action: CrmAction): CrmState {
@@ -166,9 +228,7 @@ export function applyCrmAction(action: CrmAction): CrmState {
       lead.lastContactAt = today();
       addActivity(state, lead.id, "stage", "Этап изменен", STAGES[lead.stage]);
       if (lead.stage === 3) {
-        addTask(state, lead.id, lead.ownerId, "Перезвонить через 1 день", 1, "high", "missed_call");
-        addTask(state, lead.id, lead.ownerId, "Перезвонить через 3 дня", 3, "medium", "missed_call");
-        addTask(state, lead.id, lead.ownerId, "Перезвонить через 7 дней", 7, "medium", "missed_call");
+        scheduleNoAnswerFollowUps(state, lead, lead.ownerId);
       }
     }
   }
@@ -209,6 +269,20 @@ export function applyCrmAction(action: CrmAction): CrmState {
       state.callRecords.unshift(call);
       addActivity(state, lead.id, "call", "Звонок записан", call.summary);
       addTask(state, lead.id, lead.ownerId, "Отправить аудит после звонка", 0, "high");
+    }
+  }
+
+  if (action.type === "mark_no_answer") {
+    const lead = state.leads.find((item) => item.id === action.payload.leadId);
+    const owner = state.users.find((item) => item.id === action.payload.ownerId) ?? state.users.find((item) => item.id === lead?.ownerId);
+    if (lead && owner) {
+      lead.ownerId = owner.id;
+      lead.stage = 3;
+      lead.status = "sales";
+      lead.lastContactAt = today();
+      lead.nextStep = "Перезвонить по плану 1/3/7 дней";
+      addActivity(state, lead.id, "call", "Не дозвонились", "CRM запустила автоматические задачи и уведомления на 1, 3 и 7 дней.");
+      scheduleNoAnswerFollowUps(state, lead, owner.id);
     }
   }
 
@@ -281,7 +355,7 @@ export function applyCrmAction(action: CrmAction): CrmState {
       if (action.payload.key === "no_answer_7") addTask(state, lead.id, lead.ownerId, "Нет ответа 7 дней: связаться вручную", 0, "high", "no_answer_7");
       if (action.payload.key === "no_answer_14") addActivity(state, lead.id, "warmup", "Автоматизация 14 дней", "Запущена реактивационная цепочка прогрева.");
       if (action.payload.key === "missed_call" && lead.stage === 3) {
-        addTask(state, lead.id, lead.ownerId, "Перезвонить после недозвона", 1, "high", "missed_call");
+        scheduleNoAnswerFollowUps(state, lead, lead.ownerId);
       }
     });
   }
@@ -293,6 +367,7 @@ export function applyCrmAction(action: CrmAction): CrmState {
     }
   }
 
+  persistState(state);
   return cloneState();
 }
 
