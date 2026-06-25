@@ -187,6 +187,12 @@ create table public.integrations (
   updated_at timestamptz not null default now()
 );
 
+create table public.crm_app_state (
+  key text primary key,
+  value jsonb not null,
+  updated_at timestamptz not null default now()
+);
+
 create index leads_owner_idx on public.leads(owner_id);
 create index leads_stage_idx on public.leads(stage_order);
 create index leads_status_idx on public.leads(status);
@@ -238,6 +244,7 @@ alter table public.warmup_sequences enable row level security;
 alter table public.warmup_steps enable row level security;
 alter table public.warmup_assignments enable row level security;
 alter table public.integrations enable row level security;
+alter table public.crm_app_state enable row level security;
 
 create policy "crm users can read active users" on public.crm_users for select to authenticated using (status = 'active');
 create policy "owner manages users" on public.crm_users for all to authenticated using (public.current_crm_role() = 'Руководитель') with check (public.current_crm_role() = 'Руководитель');
@@ -247,6 +254,7 @@ create policy "authenticated read pipeline" on public.pipeline_stages for select
 create policy "authenticated read warmup sequences" on public.warmup_sequences for select to authenticated using (true);
 create policy "authenticated read warmup steps" on public.warmup_steps for select to authenticated using (true);
 create policy "owners manage integrations" on public.integrations for all to authenticated using (public.current_crm_role() = 'Руководитель') with check (public.current_crm_role() = 'Руководитель');
+create policy "service role manages crm app state" on public.crm_app_state for all to service_role using (true) with check (true);
 
 create policy "company access by linked lead" on public.companies for select to authenticated using (
   public.current_crm_role() in ('Руководитель', 'РОП')

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getSessionUserId } from "@/lib/auth/session";
-import { applyCrmAction, dashboardMetrics, getCrmState, scopedStateFor } from "@/lib/crm/store";
+import { applyCrmActionAsync, dashboardMetrics, getCrmStateAsync, scopedStateForAsync } from "@/lib/crm/store";
 import type { CrmAction, CrmUser } from "@/lib/crm/types";
 
 const actionSchema = z.object({
@@ -15,7 +15,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Требуется вход" }, { status: 401 });
   }
 
-  const currentUser = getCrmState().users.find((user) => user.id === userId && user.status === "active");
+  const currentUser = (await getCrmStateAsync()).users.find((user) => user.id === userId && user.status === "active");
   if (!currentUser) {
     return NextResponse.json({ error: "Пользователь не найден" }, { status: 401 });
   }
@@ -30,8 +30,8 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Недостаточно прав" }, { status: 403 });
   }
 
-  applyCrmAction(action);
-  const state = scopedStateFor(currentUser.id);
+  await applyCrmActionAsync(action);
+  const state = await scopedStateForAsync(currentUser.id);
   return NextResponse.json({
     currentUser,
     state,

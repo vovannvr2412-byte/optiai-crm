@@ -1,14 +1,41 @@
 import { createSeedState } from "./seed";
-import { disableCredential, registerCredential } from "@/lib/auth/credentials";
+import { disableCredential, getCredentialsSnapshot, hydrateCredentialsSnapshot, registerCredential } from "@/lib/auth/credentials";
+import { createServiceSupabaseClient } from "@/lib/supabase/server";
 import { STAGES, type CrmAction, type CrmState, type Lead, type LeadTemperature, type Role } from "./types";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 const globalForCrm = globalThis as unknown as { optiCrmState?: CrmState };
-const dataDir = path.join(process.cwd(), "data");
+const dataDir = process.env.CRM_DATA_DIR || path.join(process.cwd(), "data");
 const stateFile = path.join(dataDir, "crm-state.json");
+const tempStateFile = path.join(dataDir, "crm-state.tmp.json");
 const retiredSeedUserIds = new Set(["u-anna", "u-sofia", "u-ilya"]);
 const retiredSeedUserEmails = ["anna@optiai.ru", "sofia@optiai.ru", "ilya@optiai.ru"];
+const crmStateKey = "crm_state";
+const credentialsKey = "credentials";
+
+function supabasePersistenceEnabled() {
+  return Boolean(process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY);
+}
+
+async function readSupabaseValue<T>(key: string) {
+  if (!supabasePersistenceEnabled()) return null;
+  const supabase = createServiceSupabaseClient();
+  const { data, error } = await supabase.from("crm_app_state").select("value").eq("key", key).maybeSingle();
+  if (error) throw error;
+  return (data?.value ?? null) as T | null;
+}
+
+async function writeSupabaseValue(key: string, value: unknown) {
+  if (!supabasePersistenceEnabled()) return;
+  const supabase = createServiceSupabaseClient();
+  const { error } = await supabase.from("crm_app_state").upsert({
+    key,
+    value,
+    updated_at: new Date().toISOString()
+  }, { onConflict: "key" });
+  if (error) throw error;
+}
 
 function readPersistedState() {
   if (!existsSync(stateFile)) return null;
@@ -21,7 +48,13 @@ function readPersistedState() {
 
 function persistState(state: CrmState) {
   mkdirSync(dataDir, { recursive: true });
-  writeFileSync(stateFile, JSON.stringify(state, null, 2), "utf8");
+  const serialized = JSON.stringify(state, null, 2);
+  writeFileSync(tempStateFile, serialized, "utf8");
+  renameSync(tempStateFile, stateFile);
+  const verification = JSON.parse(readFileSync(stateFile, "utf8")) as CrmState;
+  if (verification.users.length !== state.users.length || verification.leads.length !== state.leads.length) {
+    throw new Error("CRM state was not persisted correctly");
+  }
 }
 
 function migrateState(state: CrmState) {
@@ -46,6 +79,17 @@ function migrateState(state: CrmState) {
   return { state, changed: true };
 }
 
+function isCrmState(value: unknown): value is CrmState {
+  return Boolean(
+    value
+      && typeof value === "object"
+      && Array.isArray((value as CrmState).users)
+      && Array.isArray((value as CrmState).leads)
+      && Array.isArray((value as CrmState).tasks)
+      && Array.isArray((value as CrmState).integrations)
+  );
+}
+
 function id(prefix: string) {
   return `${prefix}-${Math.random().toString(36).slice(2, 8)}-${Date.now().toString(36)}`;
 }
@@ -61,12 +105,37 @@ function dateOnly(daysFromNow = 0) {
 }
 
 export function getCrmState(): CrmState {
-  if (!globalForCrm.optiCrmState) {
-    const migrated = migrateState(readPersistedState() ?? createSeedState());
-    globalForCrm.optiCrmState = migrated.state;
-    persistState(globalForCrm.optiCrmState);
+  const migrated = migrateState(readPersistedState() ?? createSeedState());
+  globalForCrm.optiCrmState = migrated.state;
+  if (migrated.changed || !existsSync(stateFile)) persistState(globalForCrm.optiCrmState);
+  return globalForCrm.optiCrmState;
+}
+
+export async function getCrmStateAsync(): Promise<CrmState> {
+  if (!supabasePersistenceEnabled()) return getCrmState();
+
+  const [storedState, storedCredentials] = await Promise.all([
+    readSupabaseValue<CrmState>(crmStateKey),
+    readSupabaseValue<ReturnType<typeof getCredentialsSnapshot>>(credentialsKey)
+  ]);
+
+  if (storedCredentials) hydrateCredentialsSnapshot(storedCredentials);
+
+  const validStoredState = isCrmState(storedState) ? storedState : null;
+  const migrated = migrateState(validStoredState ?? readPersistedState() ?? createSeedState());
+  globalForCrm.optiCrmState = migrated.state;
+  if (!storedState || migrated.changed) {
+    await persistCrmStateAsync(globalForCrm.optiCrmState);
   }
   return globalForCrm.optiCrmState;
+}
+
+async function persistCrmStateAsync(state: CrmState) {
+  persistState(state);
+  await Promise.all([
+    writeSupabaseValue(crmStateKey, state),
+    writeSupabaseValue(credentialsKey, getCredentialsSnapshot())
+  ]);
 }
 
 export function resetCrmState() {
@@ -77,6 +146,10 @@ export function resetCrmState() {
 
 export function cloneState() {
   return structuredClone(getCrmState());
+}
+
+export async function cloneStateAsync() {
+  return structuredClone(await getCrmStateAsync());
 }
 
 export function scoreLead(lead: Pick<Lead, "companySize" | "hasSeo" | "hasContext" | "hasMarketer" | "brandedQueries" | "llmVisibility" | "budget" | "stage">) {
@@ -101,6 +174,15 @@ export function temperature(score: number): LeadTemperature {
 
 export function scopedStateFor(userId: string): CrmState {
   const state = cloneState();
+  return scopeState(state, userId);
+}
+
+export async function scopedStateForAsync(userId: string): Promise<CrmState> {
+  const state = await cloneStateAsync();
+  return scopeState(state, userId);
+}
+
+function scopeState(state: CrmState, userId: string): CrmState {
   const user = state.users.find((item) => item.id === userId);
   if (!user || user.role === "Руководитель" || user.role === "РОП") return state;
   if (user.role === "Менеджер") {
@@ -369,6 +451,18 @@ export function applyCrmAction(action: CrmAction): CrmState {
 
   persistState(state);
   return cloneState();
+}
+
+export async function applyCrmActionAsync(action: CrmAction): Promise<CrmState> {
+  globalForCrm.optiCrmState = await getCrmStateAsync();
+  const nextState = applyCrmAction(action);
+  await persistCrmStateAsync(globalForCrm.optiCrmState);
+  return nextState;
+}
+
+export async function persistCredentialsAsync() {
+  if (!supabasePersistenceEnabled()) return;
+  await writeSupabaseValue(credentialsKey, getCredentialsSnapshot());
 }
 
 export function dashboardMetrics(state: CrmState) {

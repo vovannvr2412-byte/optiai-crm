@@ -1,5 +1,5 @@
 import { pbkdf2Sync, randomBytes, timingSafeEqual } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { CrmUser } from "@/lib/crm/types";
 
@@ -11,8 +11,9 @@ type Credential = {
 };
 
 const globalForCredentials = globalThis as unknown as { optiaiCredentials?: Map<string, Credential> };
-const dataDir = path.join(process.cwd(), "data");
+const dataDir = process.env.CRM_DATA_DIR || path.join(process.cwd(), "data");
 const credentialsFile = path.join(dataDir, "credentials.json");
+const tempCredentialsFile = path.join(dataDir, "credentials.tmp.json");
 
 const demoPasswords: Record<string, string> = {
   "owner@optiai.ru": "Owner2026!",
@@ -26,10 +27,20 @@ function credentials() {
   return globalForCredentials.optiaiCredentials;
 }
 
+export function getCredentialsSnapshot() {
+  return [...credentials().values()];
+}
+
+export function hydrateCredentialsSnapshot(list: Credential[]) {
+  globalForCredentials.optiaiCredentials = new Map(list.map((credential) => [normalizeEmail(credential.email), credential]));
+  persistCredentials();
+}
+
 function readPersistedCredentials() {
   if (!existsSync(credentialsFile)) return new Map<string, Credential>();
   try {
-    const list = JSON.parse(readFileSync(credentialsFile, "utf8")) as Credential[];
+    const parsed = JSON.parse(readFileSync(credentialsFile, "utf8")) as Credential[] | { value?: Credential[] };
+    const list = Array.isArray(parsed) ? parsed : parsed.value ?? [];
     return new Map(list.map((credential) => [normalizeEmail(credential.email), credential]));
   } catch {
     return new Map<string, Credential>();
@@ -38,7 +49,8 @@ function readPersistedCredentials() {
 
 function persistCredentials() {
   mkdirSync(dataDir, { recursive: true });
-  writeFileSync(credentialsFile, JSON.stringify([...credentials().values()], null, 2), "utf8");
+  writeFileSync(tempCredentialsFile, JSON.stringify([...credentials().values()], null, 2), "utf8");
+  renameSync(tempCredentialsFile, credentialsFile);
 }
 
 function normalizeEmail(email: string) {

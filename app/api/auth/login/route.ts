@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { ensureCredentials, verifyCredential } from "@/lib/auth/credentials";
 import { setSession } from "@/lib/auth/session";
-import { getCrmState } from "@/lib/crm/store";
+import { getCrmStateAsync, persistCredentialsAsync } from "@/lib/crm/store";
 
 export const runtime = "nodejs";
 
@@ -17,8 +17,9 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Введите корректный email и пароль" }, { status: 400 });
   }
 
-  const state = getCrmState();
+  const state = await getCrmStateAsync();
   ensureCredentials(state.users);
+  await persistCredentialsAsync();
   const userId = verifyCredential(parsed.data.email, parsed.data.password);
   const user = userId ? state.users.find((item) => item.id === userId && item.status === "active") : null;
   if (!user) {

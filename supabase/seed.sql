@@ -50,3 +50,7 @@ insert into public.integrations (id, name, description, status) values
 ('robokassa', 'RoboKassa', 'Оплаты подписок', 'needs_setup'),
 ('sip', 'SIP-телефония', 'Звонки, записи, автодозвон', 'needs_setup')
 on conflict (id) do update set status = excluded.status;
+
+insert into public.crm_app_state (key, value) values
+('credentials', '[]'::jsonb)
+on conflict (key) do nothing;
