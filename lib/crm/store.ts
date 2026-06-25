@@ -449,6 +449,16 @@ export function applyCrmAction(action: CrmAction): CrmState {
     const integration = state.integrations.find((item) => item.id === action.payload.integrationId);
     if (integration) {
       integration.status = integration.status === "connected" ? "needs_setup" : "connected";
+      integration.updatedAt = today();
+    }
+  }
+
+  if (action.type === "configure_integration") {
+    const integration = state.integrations.find((item) => item.id === action.payload.integrationId);
+    if (integration) {
+      integration.config = action.payload.config;
+      integration.status = "connected";
+      integration.updatedAt = today();
     }
   }
 

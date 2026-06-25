@@ -39,7 +39,7 @@ type Bootstrap = {
   metrics: Metrics;
 };
 
-type Modal = "newUser" | "newLead" | "warmupStep" | "refusal" | null;
+type Modal = "newUser" | "newLead" | "warmupStep" | "refusal" | "integration" | null;
 
 const navItems: { id: ViewId; icon: typeof LayoutDashboard }[] = [
   { id: "dashboard", icon: LayoutDashboard },
@@ -89,6 +89,7 @@ export function CrmApp() {
   const [query, setQuery] = useState("");
   const [temperature, setTemperature] = useState<"all" | "hot" | "warm" | "cold">("all");
   const [modal, setModal] = useState<Modal>(null);
+  const [selectedIntegrationId, setSelectedIntegrationId] = useState("");
   const [toast, setToast] = useState("");
   const [loadingAction, setLoadingAction] = useState(false);
 
@@ -125,12 +126,17 @@ export function CrmApp() {
       setLoadingAction(false);
       return;
     }
-    if (response.status === 403) {
-      setToast("Недостаточно прав для действия.");
+    if (!response.ok) {
+      const data = (await response.json().catch(() => null)) as { error?: string } | null;
+      setToast(data?.error || "Не удалось выполнить действие.");
       setLoadingAction(false);
       return;
     }
-    await load();
+    const data = (await response.json()) as Bootstrap;
+    setBootstrap(data);
+    if (!data.state.leads.some((lead) => lead.id === selectedLeadId)) {
+      setSelectedLeadId(data.state.leads[0]?.id ?? "");
+    }
     setToast(message);
     window.setTimeout(() => setToast(""), 2800);
     setLoadingAction(false);
@@ -152,10 +158,51 @@ export function CrmApp() {
     const value = query.trim().toLowerCase();
     return (state?.leads ?? []).filter((lead) => {
       const matchesTemperature = temperature === "all" || lead.temperature === temperature;
-      const haystack = [lead.companyName, lead.contactName, lead.sourceChannel, lead.industry, lead.region].join(" ").toLowerCase();
+      const owner = (state?.users ?? []).find((user) => user.id === lead.ownerId);
+      const haystack = [
+        lead.companyName,
+        lead.contactName,
+        lead.contactRole,
+        lead.phone,
+        lead.email,
+        lead.telegram,
+        lead.whatsapp,
+        lead.sourceChannel,
+        lead.sourceDetail,
+        lead.industry,
+        lead.region,
+        lead.pain,
+        lead.nextStep,
+        owner?.fullName
+      ].join(" ").toLowerCase();
       return matchesTemperature && (!value || haystack.includes(value));
     });
-  }, [query, state?.leads, temperature]);
+  }, [query, state?.leads, state?.users, temperature]);
+
+  const searchResults = useMemo(() => {
+    const value = query.trim().toLowerCase();
+    if (!value) return [];
+    return (state?.leads ?? []).filter((lead) => {
+      const owner = (state?.users ?? []).find((user) => user.id === lead.ownerId);
+      const haystack = [
+        lead.companyName,
+        lead.contactName,
+        lead.contactRole,
+        lead.phone,
+        lead.email,
+        lead.telegram,
+        lead.whatsapp,
+        lead.sourceChannel,
+        lead.sourceDetail,
+        lead.industry,
+        lead.region,
+        lead.pain,
+        lead.nextStep,
+        owner?.fullName
+      ].join(" ").toLowerCase();
+      return haystack.includes(value);
+    }).slice(0, 8);
+  }, [query, state?.leads, state?.users]);
 
   if (!authChecked) {
     return (
@@ -260,9 +307,41 @@ export function CrmApp() {
           </div>
 
           <div className="flex flex-wrap items-center justify-end gap-2">
-            <div className="flex min-h-11 w-80 items-center gap-2 rounded-lg border border-stone-200 bg-white px-3 max-md:w-full">
+            <div className="relative w-80 max-md:w-full">
+              <div className="flex min-h-11 items-center gap-2 rounded-lg border border-stone-200 bg-white px-3">
               <Search size={18} className="text-stone-500" />
-              <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Компания, контакт, канал" className="w-full bg-transparent outline-none" />
+                <input
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" && query.trim()) setActiveView("pipeline");
+                    if (event.key === "Escape") setQuery("");
+                  }}
+                  placeholder="Компания, контакт, телефон"
+                  className="w-full bg-transparent outline-none"
+                />
+              </div>
+              {query.trim() && (
+                <div className="absolute right-0 top-12 z-40 w-[min(520px,calc(100vw-120px))] rounded-lg border border-stone-200 bg-white p-2 shadow-2xl">
+                  {searchResults.length === 0 && <div className="px-3 py-2 text-sm text-stone-500">Ничего не найдено</div>}
+                  {searchResults.map((lead) => (
+                    <button
+                      key={lead.id}
+                      onClick={() => {
+                        openLead(lead);
+                        setQuery("");
+                      }}
+                      className="block w-full rounded-md px-3 py-2 text-left hover:bg-stone-50"
+                    >
+                      <strong className="block text-sm text-stone-950">{lead.companyName}</strong>
+                      <span className="block text-xs text-stone-600">{lead.contactName} · {lead.phone} · {STAGES[lead.stage]}</span>
+                    </button>
+                  ))}
+                  {searchResults.length > 0 && (
+                    <button onClick={() => setActiveView("pipeline")} className="mt-1 w-full rounded-md bg-stone-100 px-3 py-2 text-sm font-bold text-stone-800">Показать в воронке</button>
+                  )}
+                </div>
+              )}
             </div>
             <a
               href={selectedLead ? phoneHref(selectedLead.phone) : "#"}
@@ -354,24 +433,49 @@ export function CrmApp() {
                   <div className="grid gap-3">
                     {filteredLeads
                       .filter((lead) => lead.stage === index)
-                      .map((lead) => (
-                        <article key={lead.id} className={clsx("rounded-lg border bg-white p-3 shadow-sm", lead.temperature === "hot" ? "border-l-4 border-l-rose-500" : lead.temperature === "warm" ? "border-l-4 border-l-amber-500" : "border-l-4 border-l-teal-500")}>
-                          <button onClick={() => openLead(lead)} className="w-full text-left">
-                            <strong className="block">{lead.companyName}</strong>
-                            <span className="text-sm text-stone-600">{lead.contactName} · {lead.industry}</span>
-                          </button>
-                          <div className="mt-3 flex flex-wrap gap-1 text-xs">
-                            <Badge>{lead.sourceChannel}</Badge>
-                            <Badge>AI {lead.score}</Badge>
-                            <Badge>{userName(lead.ownerId)}</Badge>
-                          </div>
-                  <div className="mt-3 flex gap-2">
-                            <button disabled={loadingAction || lead.stage >= 12} onClick={() => void runAction({ type: "move_stage", payload: { leadId: lead.id, stage: Math.min(12, lead.stage + 1) } }, `${lead.companyName}: этап обновлен.`)} className="rounded-md bg-teal-50 px-2 py-1 text-xs font-bold text-teal-800">Следующий</button>
-                            <button onClick={() => openLead(lead, "callcenter")} className="rounded-md bg-stone-100 px-2 py-1 text-xs font-bold text-stone-800">Звонок</button>
-                            <button onClick={() => void runAction({ type: "mark_no_answer", payload: { leadId: lead.id, ownerId: lead.ownerId } }, "Недозвон зафиксирован: задачи на 1, 3 и 7 дней поставлены.")} className="rounded-md bg-amber-100 px-2 py-1 text-xs font-bold text-amber-900">Не дозвон</button>
-                  </div>
-                </article>
-              ))}
+                      .map((lead) => {
+                        const openRefusal = () => {
+                          setSelectedLeadId(lead.id);
+                          setModal("refusal");
+                        };
+                        const isDealDecision = lead.stage === 7;
+                        const isUpsell = lead.stage === 11;
+
+                        return (
+                          <article key={lead.id} className={clsx("rounded-lg border bg-white p-3 shadow-sm", lead.temperature === "hot" ? "border-l-4 border-l-rose-500" : lead.temperature === "warm" ? "border-l-4 border-l-amber-500" : "border-l-4 border-l-teal-500")}>
+                            <button onClick={() => openLead(lead)} className="w-full text-left">
+                              <strong className="block">{lead.companyName}</strong>
+                              <span className="text-sm text-stone-600">{lead.contactName} · {lead.industry}</span>
+                            </button>
+                            <div className="mt-3 flex flex-wrap gap-1 text-xs">
+                              <Badge>{lead.sourceChannel}</Badge>
+                              <Badge>AI {lead.score}</Badge>
+                              <Badge>{userName(lead.ownerId)}</Badge>
+                            </div>
+                            <div className="mt-3 flex flex-wrap gap-2">
+                              {isDealDecision && (
+                                <>
+                                  <button disabled={loadingAction} onClick={() => void runAction({ type: "move_stage", payload: { leadId: lead.id, stage: 8 } }, `${lead.companyName}: этап обновлен.`)} className="rounded-md bg-teal-50 px-2 py-1 text-xs font-bold text-teal-800">Следующий</button>
+                                  <button disabled={loadingAction} onClick={openRefusal} className="rounded-md bg-rose-100 px-2 py-1 text-xs font-bold text-rose-900">Отказ</button>
+                                </>
+                              )}
+                              {isUpsell && (
+                                <>
+                                  <button disabled={loadingAction} onClick={() => void runAction({ type: "mark_paid", payload: { leadId: lead.id, tariffId: lead.tariffId ?? state.tariffs[0].id } }, "Оплата отмечена.")} className="rounded-md bg-lime-100 px-2 py-1 text-xs font-bold text-lime-900">Оплата</button>
+                                  <button disabled={loadingAction} onClick={openRefusal} className="rounded-md bg-rose-100 px-2 py-1 text-xs font-bold text-rose-900">Отказ</button>
+                                </>
+                              )}
+                              {!isDealDecision && !isUpsell && (
+                                <>
+                                  <button disabled={loadingAction || lead.stage >= 12} onClick={() => void runAction({ type: "move_stage", payload: { leadId: lead.id, stage: Math.min(12, lead.stage + 1) } }, `${lead.companyName}: этап обновлен.`)} className="rounded-md bg-teal-50 px-2 py-1 text-xs font-bold text-teal-800">Следующий</button>
+                                  <button onClick={() => openLead(lead, "callcenter")} className="rounded-md bg-stone-100 px-2 py-1 text-xs font-bold text-stone-800">Звонок</button>
+                                  <button onClick={() => void runAction({ type: "mark_no_answer", payload: { leadId: lead.id, ownerId: lead.ownerId } }, "Недозвон зафиксирован: задачи на 1, 3 и 7 дней поставлены.")} className="rounded-md bg-amber-100 px-2 py-1 text-xs font-bold text-amber-900">Не дозвон</button>
+                                </>
+                              )}
+                            </div>
+                          </article>
+                        );
+                      })}
               {filteredLeads.filter((lead) => lead.stage === index).length === 0 && <div className="rounded-lg border border-dashed border-stone-300 bg-white/60 p-3 text-sm text-stone-500">Нет сделок</div>}
                   </div>
                 </div>
@@ -590,10 +694,18 @@ export function CrmApp() {
             <Panel title="Интеграции" subtitle="Коммуникации, платежи, аналитика и телефония из ТЗ.">
               <div className="grid grid-cols-3 gap-3 max-lg:grid-cols-2 max-sm:grid-cols-1">
                 {state.integrations.map((integration) => (
-                  <button key={integration.id} onClick={() => void runAction({ type: "toggle_integration", payload: { integrationId: integration.id } }, "Статус интеграции изменен.")} className="rounded-lg border border-stone-200 bg-white p-3 text-left">
+                  <button
+                    key={integration.id}
+                    onClick={() => {
+                      setSelectedIntegrationId(integration.id);
+                      setModal("integration");
+                    }}
+                    className="rounded-lg border border-stone-200 bg-white p-3 text-left hover:border-teal-400"
+                  >
                     <strong className="block">{integration.name}</strong>
                     <span className="text-sm text-stone-600">{integration.description}</span>
                     <Badge>{integration.status === "connected" ? "подключено" : integration.status === "needs_setup" ? "настроить" : "ошибка"}</Badge>
+                    <span className="mt-3 block rounded-md bg-stone-100 px-3 py-2 text-center text-sm font-bold">Настроить</span>
                   </button>
                 ))}
               </div>
@@ -608,6 +720,12 @@ export function CrmApp() {
           {modal === "newLead" && <NewLeadForm state={state} onSubmit={(action) => { setModal(null); void runAction(action, "Лид создан и задача поставлена."); }} />}
           {modal === "warmupStep" && <WarmupForm sequenceId={state.warmupSequences[0]?.id} onSubmit={(action) => { setModal(null); void runAction(action, "Шаг прогрева добавлен."); }} />}
           {modal === "refusal" && selectedLead && <RefusalForm leadId={selectedLead.id} onSubmit={(action) => { setModal(null); void runAction(action, "Отказ сохранен с причиной."); }} />}
+          {modal === "integration" && (
+            <IntegrationForm
+              integration={state.integrations.find((item) => item.id === selectedIntegrationId)}
+              onSubmit={(action) => { setModal(null); void runAction(action, "Интеграция настроена."); }}
+            />
+          )}
         </ModalShell>
       )}
 
@@ -857,6 +975,88 @@ function NewUserForm({ currentUser, onSubmit }: { currentUser: CrmUser; onSubmit
   );
 }
 
+const integrationFieldMap: Record<string, { name: string; label: string; type?: string; placeholder?: string }[]> = {
+  telegram: [
+    { name: "botToken", label: "Bot Token", placeholder: "123456:ABC..." },
+    { name: "webhookSecret", label: "Webhook Secret" }
+  ],
+  whatsapp: [
+    { name: "provider", label: "Провайдер", placeholder: "360dialog / Wazzup / Green API" },
+    { name: "apiKey", label: "API Key" },
+    { name: "phoneId", label: "Phone ID / Instance ID" }
+  ],
+  max: [
+    { name: "botToken", label: "Bot Token" },
+    { name: "webhookSecret", label: "Webhook Secret" }
+  ],
+  instagram: [
+    { name: "accessToken", label: "Access Token" },
+    { name: "pageId", label: "Page / Business ID" }
+  ],
+  avito: [
+    { name: "clientId", label: "Client ID" },
+    { name: "clientSecret", label: "Client Secret" }
+  ],
+  sheets: [
+    { name: "spreadsheetId", label: "Spreadsheet ID" },
+    { name: "serviceAccountEmail", label: "Service Account Email", type: "email" }
+  ],
+  metrika: [
+    { name: "counterId", label: "Counter ID" },
+    { name: "oauthToken", label: "OAuth Token" }
+  ],
+  robokassa: [
+    { name: "merchantLogin", label: "Merchant Login" },
+    { name: "password1", label: "Password #1", type: "password" },
+    { name: "password2", label: "Password #2", type: "password" }
+  ],
+  sip: [
+    { name: "provider", label: "Провайдер", placeholder: "Zadarma / Mango / UIS" },
+    { name: "apiKey", label: "API Key" },
+    { name: "apiSecret", label: "API Secret", type: "password" },
+    { name: "webhookSecret", label: "Webhook Secret" }
+  ]
+};
+
+function IntegrationForm({ integration, onSubmit }: { integration?: CrmState["integrations"][number]; onSubmit: (action: CrmAction) => void }) {
+  if (!integration) {
+    return <EmptyState title="Интеграция не найдена" text="Закройте окно и выберите интеграцию заново." />;
+  }
+
+  const currentIntegration = integration;
+  const fields = integrationFieldMap[currentIntegration.id] ?? [
+    { name: "apiKey", label: "API Key" },
+    { name: "webhookUrl", label: "Webhook URL" }
+  ];
+
+  function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const data = Object.fromEntries(new FormData(event.currentTarget).entries()) as Record<string, string>;
+    onSubmit({ type: "configure_integration", payload: { integrationId: currentIntegration.id, config: data } });
+  }
+
+  return (
+    <form onSubmit={submit} className="grid gap-3">
+      <div>
+        <h2 className="text-2xl font-black">Настроить {currentIntegration.name}</h2>
+        <p className="mt-1 text-sm text-stone-600">{currentIntegration.description}</p>
+      </div>
+      {fields.map((field) => (
+        <FormInput
+          key={field.name}
+          name={field.name}
+          label={field.label}
+          type={field.type ?? "text"}
+          defaultValue={currentIntegration.config?.[field.name] ?? ""}
+          placeholder={field.placeholder}
+          required
+        />
+      ))}
+      <button className="rounded-lg bg-stone-950 px-4 py-3 font-bold text-white">Сохранить интеграцию</button>
+    </form>
+  );
+}
+
 function NewLeadForm({ state, onSubmit }: { state: CrmState; onSubmit: (action: CrmAction) => void }) {
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -987,11 +1187,11 @@ function RefusalForm({ leadId, onSubmit }: { leadId: string; onSubmit: (action: 
   );
 }
 
-function FormInput({ name, label, type = "text", required = false }: { name: string; label: string; type?: string; required?: boolean }) {
+function FormInput({ name, label, type = "text", required = false, defaultValue = "", placeholder }: { name: string; label: string; type?: string; required?: boolean; defaultValue?: string; placeholder?: string }) {
   return (
     <label className="grid gap-1 text-sm font-bold text-stone-600">
       {label}
-      <input name={name} type={type} required={required} className="rounded-lg border border-stone-200 px-3 py-2 text-stone-950 outline-none focus:border-teal-500" />
+      <input name={name} type={type} required={required} defaultValue={defaultValue} placeholder={placeholder} className="rounded-lg border border-stone-200 px-3 py-2 text-stone-950 outline-none focus:border-teal-500" />
     </label>
   );
 }

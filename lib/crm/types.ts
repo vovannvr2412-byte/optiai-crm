@@ -149,6 +149,8 @@ export type Integration = {
   name: string;
   description: string;
   status: IntegrationStatus;
+  config?: Record<string, string>;
+  updatedAt?: string;
 };
 
 export type CrmState = {
@@ -180,7 +182,8 @@ export type CrmAction =
   | { type: "mark_refused"; payload: { leadId: string; reason: string } }
   | { type: "renew_subscription"; payload: { subscriptionId: string } }
   | { type: "run_automation"; payload: { key: "no_answer_3" | "no_answer_7" | "no_answer_14" | "missed_call" } }
-  | { type: "toggle_integration"; payload: { integrationId: string } };
+  | { type: "toggle_integration"; payload: { integrationId: string } }
+  | { type: "configure_integration"; payload: { integrationId: string; config: Record<string, string> } };
 
 export const STAGES = [
   "Новый лид",

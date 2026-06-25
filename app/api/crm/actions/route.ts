@@ -50,8 +50,8 @@ function canRunAction(user: CrmUser, action: CrmAction) {
     return user.role === "РОП" && (action.payload.role === "Менеджер" || action.payload.role === "Аккаунт-менеджер");
   }
   if (action.type === "disable_user" || action.type === "delete_user") return false;
-  if (user.role === "РОП") return action.type !== "toggle_integration";
-  if (action.type === "assign_lead" || action.type === "toggle_integration" || action.type === "run_automation") {
+  if (user.role === "РОП") return action.type !== "toggle_integration" && action.type !== "configure_integration";
+  if (action.type === "assign_lead" || action.type === "toggle_integration" || action.type === "configure_integration" || action.type === "run_automation") {
     return false;
   }
   return true;
