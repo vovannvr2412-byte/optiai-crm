@@ -187,8 +187,8 @@ export function CrmApp() {
   ];
 
   return (
-    <div className="grid min-h-screen grid-cols-[280px_minmax(0,1fr)] max-lg:grid-cols-[90px_minmax(0,1fr)] max-md:block">
-      <aside className="sticky top-0 flex h-screen flex-col border-r border-white/10 bg-[#24231f] p-4 text-stone-100 max-md:static max-md:h-auto">
+    <div className="grid min-h-screen grid-cols-[280px_minmax(0,1fr)] max-lg:grid-cols-[90px_minmax(0,1fr)] max-md:grid-cols-[86px_minmax(0,1fr)]">
+      <aside className="sticky top-0 flex h-screen flex-col border-r border-white/10 bg-[#24231f] p-4 text-stone-100 max-md:p-3">
         <div className="mb-6 flex items-center gap-3 px-1 max-lg:justify-center">
           <div className="grid size-11 place-items-center rounded-lg bg-gradient-to-br from-lime-200 via-teal-300 to-white font-black text-stone-950">OA</div>
           <div className="max-lg:hidden">
@@ -233,7 +233,7 @@ export function CrmApp() {
         </div>
       </aside>
 
-      <main className="min-w-0 p-6 max-md:p-4">
+      <main className="min-w-0 p-6 max-md:p-3">
         <header className="mb-5 flex items-start justify-between gap-4 max-xl:flex-col">
           <div>
             <p className="text-xs font-black uppercase text-teal-700">SEO + GEO на автопилоте</p>
@@ -270,6 +270,7 @@ export function CrmApp() {
             <div className="grid grid-cols-[1.25fr_.75fr] gap-4 max-xl:grid-cols-1">
               <Panel title="AI-рекомендации на сегодня" subtitle="Утром менеджер получает звонки, задачи и следующий лучший шаг.">
                 <div className="grid gap-3">
+                  {state.tasks.length === 0 && <EmptyState title="Задач пока нет" text="Создайте первого лида или импортируйте заявки, чтобы CRM начала формировать задачи." />}
                   {state.tasks
                     .filter((task) => task.status === "open")
                     .slice(0, 5)
@@ -340,12 +341,13 @@ export function CrmApp() {
                             <Badge>AI {lead.score}</Badge>
                             <Badge>{userName(lead.ownerId)}</Badge>
                           </div>
-                          <div className="mt-3 flex gap-2">
+                  <div className="mt-3 flex gap-2">
                             <button disabled={loadingAction || lead.stage >= 12} onClick={() => void runAction({ type: "move_stage", payload: { leadId: lead.id, stage: Math.min(12, lead.stage + 1) } }, `${lead.companyName}: этап обновлен.`)} className="rounded-md bg-teal-50 px-2 py-1 text-xs font-bold text-teal-800">Следующий</button>
                             <button onClick={() => openLead(lead, "callcenter")} className="rounded-md bg-stone-100 px-2 py-1 text-xs font-bold text-stone-800">Звонок</button>
-                          </div>
-                        </article>
-                      ))}
+                  </div>
+                </article>
+              ))}
+              {filteredLeads.filter((lead) => lead.stage === index).length === 0 && <div className="rounded-lg border border-dashed border-stone-300 bg-white/60 p-3 text-sm text-stone-500">Нет сделок</div>}
                   </div>
                 </div>
               ))}
@@ -363,11 +365,15 @@ export function CrmApp() {
             onRefusal={() => setModal("refusal")}
           />
         )}
+        {activeView === "lead" && !selectedLead && (
+          <EmptyState title="Карточек компаний пока нет" text="Добавьте первого лида через кнопку “Новый лид”. CRM не содержит демонстрационных компаний и ложных данных." action={<button onClick={() => setModal("newLead")} className="rounded-lg bg-stone-950 px-4 py-3 font-bold text-white">Создать лид</button>} />
+        )}
 
         {activeView === "callcenter" && (
           <section className="grid grid-cols-[.8fr_1.2fr] gap-4 max-xl:grid-cols-1">
             <Panel title="Список обзвона" subtitle="Клик по номеру, запись, расшифровка и AI-анализ.">
               <div className="grid gap-3">
+                {state.leads.filter((lead) => lead.status !== "lost").length === 0 && <EmptyState title="Список обзвона пуст" text="После создания лидов здесь появятся реальные звонки менеджеров." />}
                 {state.leads.filter((lead) => lead.status !== "lost").map((lead) => (
                   <div key={lead.id} className="flex items-center justify-between gap-3 rounded-lg border border-stone-200 bg-white p-3">
                     <button onClick={() => openLead(lead)} className="text-left">
@@ -382,6 +388,7 @@ export function CrmApp() {
 
             <Panel title="Расшифровки и AI-анализ" subtitle="Текст разговора, summary, возражения, вероятность сделки, ошибки менеджера.">
               <div className="grid gap-3">
+                {state.callRecords.length === 0 && <EmptyState title="Записей звонков пока нет" text="Здесь появятся реальные записи, расшифровки и AI-анализ после звонков." />}
                 {state.callRecords.slice(0, 5).map((call) => {
                   const lead = state.leads.find((item) => item.id === call.leadId);
                   return (
@@ -428,7 +435,7 @@ export function CrmApp() {
             </Panel>
 
             <Panel title="Библиотека контента" subtitle="AI подбирает материал под боль клиента.">
-              {["VSL OptiAI", "SEO-аудит", "Кейс CPL -47%", "Аудит конкурентов", "Карта LLM-видимости"].map((item) => (
+              {["VSL OptiAI", "SEO-аудит", "Кейс клиента", "Аудит конкурентов", "Карта LLM-видимости"].map((item) => (
                 <button key={item} onClick={() => selectedLead && void runAction({ type: "send_message", payload: { leadId: selectedLead.id, channel: "Telegram", text: `Отправлен материал: ${item}` } }, `${item} отправлен текущему лиду.`)} className="mb-2 w-full rounded-lg border border-stone-200 bg-white p-3 text-left">
                   <strong>{item}</strong>
                   <span className="block text-sm text-stone-600">Отправить в последний активный канал</span>
@@ -441,6 +448,7 @@ export function CrmApp() {
         {activeView === "subscriptions" && (
           <Panel title="Подписки и продления" subtitle="Тариф, стоимость, старт, окончание, следующий платеж, история оплат.">
             <div className="grid gap-3">
+              {state.subscriptions.length === 0 && <EmptyState title="Подписок пока нет" text="Когда клиент оплатит тариф, подписка появится здесь без фейковых оплат." />}
               {state.subscriptions.map((subscription) => {
                 const lead = state.leads.find((item) => item.id === subscription.leadId);
                 return (
@@ -492,7 +500,12 @@ export function CrmApp() {
                       </div>
                       <div className="mt-3 flex flex-wrap gap-2">
                         <span className="rounded-md bg-teal-50 px-3 py-2 text-sm font-bold text-teal-800">Вход только по паролю</span>
-                        {currentUser.role === "Руководитель" && user.role !== "Руководитель" && <button onClick={() => void runAction({ type: "disable_user", payload: { userId: user.id } }, "Аккаунт отключен, сделки переназначены.")} className="rounded-md bg-stone-100 px-3 py-2 text-sm font-bold">Отключить</button>}
+                        {currentUser.role === "Руководитель" && user.role !== "Руководитель" && (
+                          <>
+                            <button onClick={() => void runAction({ type: "disable_user", payload: { userId: user.id } }, "Аккаунт отключен, сделки переназначены.")} className="rounded-md bg-stone-100 px-3 py-2 text-sm font-bold">Отключить</button>
+                            <button onClick={() => window.confirm(`Удалить аккаунт ${user.fullName}? Это действие уберет пользователя из CRM.`) && void runAction({ type: "delete_user", payload: { userId: user.id } }, "Аккаунт удален из CRM.")} className="rounded-md bg-rose-100 px-3 py-2 text-sm font-bold text-rose-800">Удалить</button>
+                          </>
+                        )}
                       </div>
                     </article>
                   ))}
@@ -514,6 +527,7 @@ export function CrmApp() {
 
             <Panel title="Назначение сделок" subtitle="Руководитель и РОП управляют ответственными за лидов и клиентов.">
               <div className="grid gap-2">
+                {state.leads.length === 0 && <EmptyState title="Назначать пока нечего" text="Сделки появятся после создания реальных лидов." />}
                 {state.leads.map((lead) => (
                   <div key={lead.id} className="grid grid-cols-[1.2fr_1fr_1fr_auto] items-center gap-3 rounded-lg border border-stone-200 bg-white p-3 max-lg:grid-cols-1">
                     <strong>{lead.companyName}</strong>
@@ -660,6 +674,16 @@ function Badge({ children }: { children: React.ReactNode }) {
   return <span className="inline-flex rounded-full bg-stone-100 px-2 py-1 text-xs font-bold text-stone-700">{children}</span>;
 }
 
+function EmptyState({ title, text, action }: { title: string; text: string; action?: React.ReactNode }) {
+  return (
+    <div className="rounded-lg border border-dashed border-stone-300 bg-white/70 p-5 text-center">
+      <strong className="block text-stone-950">{title}</strong>
+      <p className="mx-auto mt-2 max-w-xl text-sm text-stone-600">{text}</p>
+      {action && <div className="mt-4">{action}</div>}
+    </div>
+  );
+}
+
 function LeadView({ lead, state, userName, tariffName, onAction, onRefusal }: { lead: Lead; state: CrmState; userName: (id: string) => string; tariffName: (id?: string) => string; onAction: (action: CrmAction, message: string) => Promise<void>; onRefusal: () => void }) {
   const fields = [
     ["Компания", lead.companyName],
@@ -718,7 +742,7 @@ function LeadView({ lead, state, userName, tariffName, onAction, onRefusal }: { 
             <Info title="Каналы продвижения" text={lead.currentPromotionChannels} />
             <Info title="Бюджет" text={lead.budget} />
             <Info title="Следующий шаг" text={lead.nextStep} />
-            <Info title="Контент прогрева" text={lead.pain.includes("Директ") ? "Кейс: как снизили стоимость лида на 47% через SEO." : "SEO + GEO аудит и карта конкурентов."} />
+            <Info title="Контент прогрева" text={lead.pain.includes("Директ") ? "Кейс по снижению стоимости лида после загрузки подтвержденных данных клиента." : "SEO + GEO аудит и карта конкурентов."} />
             {lead.refusalReason && <Info title="Причина отказа" text={lead.refusalReason} />}
           </div>
         </Panel>

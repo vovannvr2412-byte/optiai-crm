@@ -167,6 +167,7 @@ export type CrmState = {
 export type CrmAction =
   | { type: "create_user"; payload: Pick<CrmUser, "fullName" | "email" | "role" | "position"> & { password: string } }
   | { type: "disable_user"; payload: { userId: string } }
+  | { type: "delete_user"; payload: { userId: string } }
   | { type: "create_lead"; payload: Omit<Lead, "id" | "stage" | "status" | "score" | "temperature" | "createdAt"> }
   | { type: "move_stage"; payload: { leadId: string; stage: number } }
   | { type: "assign_lead"; payload: { leadId: string; ownerId: string } }

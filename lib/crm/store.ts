@@ -123,6 +123,22 @@ export function applyCrmAction(action: CrmAction): CrmState {
     }
   }
 
+  if (action.type === "delete_user") {
+    const user = state.users.find((item) => item.id === action.payload.userId);
+    if (user && user.role !== "Руководитель") {
+      const fallback = state.users.find((item) => item.role === "РОП" && item.status === "active" && item.id !== user.id)
+        ?? state.users.find((item) => item.role === "Руководитель" && item.status === "active");
+      state.leads.filter((lead) => lead.ownerId === user.id).forEach((lead) => {
+        lead.ownerId = fallback?.id ?? "";
+        addActivity(state, lead.id, "system", "Ответственный удален", fallback ? `Аккаунт ${user.fullName} удален, сделка передана ${fallback.fullName}.` : `Аккаунт ${user.fullName} удален.`);
+      });
+      state.tasks = state.tasks.filter((task) => task.ownerId !== user.id);
+      state.callRecords = state.callRecords.filter((call) => call.ownerId !== user.id);
+      state.users = state.users.filter((item) => item.id !== user.id);
+      disableCredential(user.email);
+    }
+  }
+
   if (action.type === "create_lead") {
     const lead: Lead = {
       ...action.payload,
