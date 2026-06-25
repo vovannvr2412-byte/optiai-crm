@@ -235,7 +235,7 @@ function dateLabelForTask(daysFromNow: number) {
 }
 
 export function applyCrmAction(action: CrmAction): CrmState {
-  const state = getCrmState();
+  const state = suppressLocalPersistence && globalForCrm.optiCrmState ? globalForCrm.optiCrmState : getCrmState();
 
   if (action.type === "create_user") {
     const newUser = {
@@ -453,7 +453,7 @@ export function applyCrmAction(action: CrmAction): CrmState {
   }
 
   if (!suppressLocalPersistence) persistState(state);
-  return cloneState();
+  return structuredClone(state);
 }
 
 export async function applyCrmActionAsync(action: CrmAction): Promise<CrmState> {

@@ -30,8 +30,13 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Недостаточно прав" }, { status: 403 });
   }
 
-  await applyCrmActionAsync(action);
-  const state = await scopedStateForAsync(currentUser.id);
+  let state;
+  try {
+    await applyCrmActionAsync(action);
+    state = await scopedStateForAsync(currentUser.id);
+  } catch {
+    return NextResponse.json({ error: "CRM не смогла сохранить действие в Supabase." }, { status: 500 });
+  }
   return NextResponse.json({
     currentUser,
     state,
