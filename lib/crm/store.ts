@@ -13,6 +13,7 @@ const retiredSeedUserIds = new Set(["u-anna", "u-sofia", "u-ilya"]);
 const retiredSeedUserEmails = ["anna@optiai.ru", "sofia@optiai.ru", "ilya@optiai.ru"];
 const crmStateKey = "crm_state";
 const credentialsKey = "credentials";
+let suppressLocalPersistence = false;
 
 function supabasePersistenceEnabled() {
   return Boolean(process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY);
@@ -122,7 +123,7 @@ export async function getCrmStateAsync(): Promise<CrmState> {
   if (storedCredentials) hydrateCredentialsSnapshot(storedCredentials);
 
   const validStoredState = isCrmState(storedState) ? storedState : null;
-  const migrated = migrateState(validStoredState ?? readPersistedState() ?? createSeedState());
+  const migrated = migrateState(validStoredState ?? createSeedState());
   globalForCrm.optiCrmState = migrated.state;
   if (!storedState || migrated.changed) {
     await persistCrmStateAsync(globalForCrm.optiCrmState);
@@ -131,7 +132,9 @@ export async function getCrmStateAsync(): Promise<CrmState> {
 }
 
 async function persistCrmStateAsync(state: CrmState) {
-  persistState(state);
+  if (!supabasePersistenceEnabled()) {
+    persistState(state);
+  }
   await Promise.all([
     writeSupabaseValue(crmStateKey, state),
     writeSupabaseValue(credentialsKey, getCredentialsSnapshot())
@@ -449,15 +452,20 @@ export function applyCrmAction(action: CrmAction): CrmState {
     }
   }
 
-  persistState(state);
+  if (!suppressLocalPersistence) persistState(state);
   return cloneState();
 }
 
 export async function applyCrmActionAsync(action: CrmAction): Promise<CrmState> {
   globalForCrm.optiCrmState = await getCrmStateAsync();
-  const nextState = applyCrmAction(action);
-  await persistCrmStateAsync(globalForCrm.optiCrmState);
-  return nextState;
+  suppressLocalPersistence = true;
+  try {
+    const nextState = applyCrmAction(action);
+    await persistCrmStateAsync(globalForCrm.optiCrmState);
+    return nextState;
+  } finally {
+    suppressLocalPersistence = false;
+  }
 }
 
 export async function persistCredentialsAsync() {

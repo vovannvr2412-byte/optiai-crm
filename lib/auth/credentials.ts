@@ -20,6 +20,10 @@ const demoPasswords: Record<string, string> = {
   "rop@optiai.ru": "Rop2026!"
 };
 
+function localCredentialFilesEnabled() {
+  return !process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY;
+}
+
 function credentials() {
   if (!globalForCredentials.optiaiCredentials) {
     globalForCredentials.optiaiCredentials = readPersistedCredentials();
@@ -33,10 +37,10 @@ export function getCredentialsSnapshot() {
 
 export function hydrateCredentialsSnapshot(list: Credential[]) {
   globalForCredentials.optiaiCredentials = new Map(list.map((credential) => [normalizeEmail(credential.email), credential]));
-  persistCredentials();
 }
 
 function readPersistedCredentials() {
+  if (!localCredentialFilesEnabled()) return new Map<string, Credential>();
   if (!existsSync(credentialsFile)) return new Map<string, Credential>();
   try {
     const parsed = JSON.parse(readFileSync(credentialsFile, "utf8")) as Credential[] | { value?: Credential[] };
@@ -48,6 +52,7 @@ function readPersistedCredentials() {
 }
 
 function persistCredentials() {
+  if (!localCredentialFilesEnabled()) return;
   mkdirSync(dataDir, { recursive: true });
   writeFileSync(tempCredentialsFile, JSON.stringify([...credentials().values()], null, 2), "utf8");
   renameSync(tempCredentialsFile, credentialsFile);

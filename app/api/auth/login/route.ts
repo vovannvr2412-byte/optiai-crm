@@ -17,9 +17,14 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Введите корректный email и пароль" }, { status: 400 });
   }
 
-  const state = await getCrmStateAsync();
-  ensureCredentials(state.users);
-  await persistCredentialsAsync();
+  let state;
+  try {
+    state = await getCrmStateAsync();
+    ensureCredentials(state.users);
+    await persistCredentialsAsync();
+  } catch {
+    return NextResponse.json({ error: "CRM не подключилась к Supabase. Проверьте таблицу crm_app_state и переменные Vercel." }, { status: 500 });
+  }
   const userId = verifyCredential(parsed.data.email, parsed.data.password);
   const user = userId ? state.users.find((item) => item.id === userId && item.status === "active") : null;
   if (!user) {
