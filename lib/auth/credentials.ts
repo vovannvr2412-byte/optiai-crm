@@ -21,7 +21,7 @@ const demoPasswords: Record<string, string> = {
 };
 
 function localCredentialFilesEnabled() {
-  return !process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY;
+  return process.env.CRM_FORCE_LOCAL === "true" || !process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY;
 }
 
 function credentials() {

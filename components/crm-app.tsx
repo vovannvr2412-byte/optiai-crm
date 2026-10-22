@@ -18,7 +18,8 @@ import {
   Plus,
   Search,
   ShieldCheck,
-  UsersRound
+  UsersRound,
+  X
 } from "lucide-react";
 import { ROLE_PERMISSIONS, STAGES, VIEW_TITLES, type CrmAction, type CrmState, type CrmUser, type Lead, type Role, type ViewId } from "@/lib/crm/types";
 
@@ -124,22 +125,28 @@ export function CrmApp() {
       setBootstrap(null);
       setToast("Сессия закончилась. Войдите заново.");
       setLoadingAction(false);
-      return;
+      return false;
     }
     if (!response.ok) {
       const data = (await response.json().catch(() => null)) as { error?: string } | null;
       setToast(data?.error || "Не удалось выполнить действие.");
       setLoadingAction(false);
-      return;
+      return false;
     }
     const data = (await response.json()) as Bootstrap;
     setBootstrap(data);
-    if (!data.state.leads.some((lead) => lead.id === selectedLeadId)) {
+    if (action.type === "create_lead") {
+      setQuery("");
+      setTemperature("all");
+      setActiveView("pipeline");
+      setSelectedLeadId(data.state.leads[0]?.id ?? "");
+    } else if (!data.state.leads.some((lead) => lead.id === selectedLeadId)) {
       setSelectedLeadId(data.state.leads[0]?.id ?? "");
     }
     setToast(message);
     window.setTimeout(() => setToast(""), 2800);
     setLoadingAction(false);
+    return true;
   }
 
   const state = bootstrap?.state;
@@ -207,7 +214,7 @@ export function CrmApp() {
   if (!authChecked) {
     return (
       <main className="grid min-h-screen place-items-center text-neutral-900">
-        <div className="rounded-lg border border-stone-200 bg-white p-6 shadow-xl">Загружаем OptiAI CRM...</div>
+        <div className="rounded-lg border border-[#E5E7EB] bg-white p-6 text-sm font-semibold text-slate-600">Загружаем OptiAI CRM...</div>
       </main>
     );
   }
@@ -216,9 +223,14 @@ export function CrmApp() {
     return <LoginScreen onLogin={load} />;
   }
 
-  function openLead(lead: Lead, view: ViewId = "lead") {
+  function openLead(lead: Lead, view: ViewId = "pipeline") {
     setSelectedLeadId(lead.id);
     setActiveView(view);
+  }
+
+  function viewLead(lead: Lead) {
+    setSelectedLeadId(lead.id);
+    setActiveView("lead");
   }
 
   function userName(userId: string) {
@@ -228,6 +240,92 @@ export function CrmApp() {
   function tariffName(tariffId?: string) {
     const tariff = (bootstrap?.state.tariffs ?? []).find((item) => item.id === tariffId);
     return tariff ? `${tariff.name} · ${money(tariff.price)}` : "тариф не выбран";
+  }
+
+  function renderPipelineActions(lead: Lead) {
+    if (!state || !currentUser) return null;
+
+    const openRefusal = () => {
+      setSelectedLeadId(lead.id);
+      setModal("refusal");
+    };
+    const subscription = state.subscriptions.find((item) => item.leadId === lead.id && item.status === "active");
+    const primary = "ui-button ui-button-primary min-h-8 px-2.5 py-1 text-xs";
+    const neutral = "ui-button ui-button-secondary min-h-8 px-2.5 py-1 text-xs";
+    const warning = "ui-button ui-button-warning min-h-8 px-2.5 py-1 text-xs";
+    const danger = "ui-button ui-button-danger min-h-8 px-2.5 py-1 text-xs";
+    const success = "ui-button ui-button-success min-h-8 px-2.5 py-1 text-xs";
+
+    if (lead.stage === 0) {
+      return <button disabled={loadingAction} onClick={() => void runAction({ type: "move_stage", payload: { leadId: lead.id, stage: 1 } }, `${lead.companyName}: контакт найден.`)} className={primary}>Контакт найден</button>;
+    }
+
+    if (lead.stage === 1) {
+      return <button disabled={loadingAction} onClick={() => void runAction({ type: "move_stage", payload: { leadId: lead.id, stage: 2 } }, `${lead.companyName}: назначен первый звонок.`)} className={primary}>Первый звонок</button>;
+    }
+
+    if (lead.stage === 2 || lead.stage === 3) {
+      return (
+        <>
+          <a href={phoneHref(lead.phone)} onClick={() => void runAction({ type: "record_call", payload: { leadId: lead.id, ownerId: currentUser.id } }, "Звонок открыт на устройстве, CRM зафиксировала разговор.")} className={primary}>Звонок</a>
+          <button disabled={loadingAction} onClick={() => void runAction({ type: "mark_no_answer", payload: { leadId: lead.id, ownerId: lead.ownerId } }, "Недозвон зафиксирован: задачи на 1, 3 и 7 дней поставлены.")} className={warning}>Не дозвон</button>
+        </>
+      );
+    }
+
+    if (lead.stage === 4) {
+      return <button disabled={loadingAction} onClick={() => void runAction({ type: "move_stage", payload: { leadId: lead.id, stage: 5 } }, `${lead.companyName}: аудит отправлен.`)} className={primary}>Отправить аудит</button>;
+    }
+
+    if (lead.stage === 5) {
+      return <button disabled={loadingAction} onClick={() => void runAction({ type: "start_warmup", payload: { leadId: lead.id, sequenceId: state.warmupSequences[0]?.id ?? "" } }, "Прогрев запущен по сценарию OptiAI.")} className={warning}>Запустить прогрев</button>;
+    }
+
+    if (lead.stage === 6) {
+      return (
+        <>
+          <button disabled={loadingAction} onClick={() => void runAction({ type: "send_message", payload: { leadId: lead.id, channel: "Telegram", text: "Отправлено касание прогрева по текущему сценарию." } }, "Касание прогрева отправлено.")} className={neutral}>Касание</button>
+          <button disabled={loadingAction} onClick={() => void runAction({ type: "move_stage", payload: { leadId: lead.id, stage: 7 } }, `${lead.companyName}: перешел к решению.`)} className={primary}>Сделка/отказ</button>
+        </>
+      );
+    }
+
+    if (lead.stage === 7) {
+      return (
+        <>
+          <button disabled={loadingAction} onClick={() => void runAction({ type: "move_stage", payload: { leadId: lead.id, stage: 8 } }, `${lead.companyName}: перешел к оплате.`)} className={primary}>Следующий</button>
+          <button disabled={loadingAction} onClick={openRefusal} className={danger}>Отказ</button>
+        </>
+      );
+    }
+
+    if (lead.stage === 8) {
+      return <button disabled={loadingAction} onClick={() => void runAction({ type: "mark_paid", payload: { leadId: lead.id, tariffId: lead.tariffId ?? state.tariffs[0].id } }, "Оплата отмечена, клиент подключен.")} className={success}>Отметить оплату</button>;
+    }
+
+    if (lead.stage === 9) {
+      return <button disabled={loadingAction} onClick={() => void runAction({ type: "move_stage", payload: { leadId: lead.id, stage: 10 } }, `${lead.companyName}: поставлен на продление.`)} className={primary}>К продлению</button>;
+    }
+
+    if (lead.stage === 10) {
+      return (
+        <>
+          <button disabled={loadingAction || !subscription} onClick={() => subscription && void runAction({ type: "renew_subscription", payload: { subscriptionId: subscription.id } }, "Продление запущено.")} className={warning}>Продлить</button>
+          <button disabled={loadingAction} onClick={() => void runAction({ type: "move_stage", payload: { leadId: lead.id, stage: 11 } }, `${lead.companyName}: переведен в апселл.`)} className={primary}>Апселл</button>
+        </>
+      );
+    }
+
+    if (lead.stage === 11) {
+      return (
+        <>
+          <button disabled={loadingAction} onClick={() => void runAction({ type: "mark_paid", payload: { leadId: lead.id, tariffId: lead.tariffId ?? state.tariffs[0].id } }, "Оплата апселла отмечена.")} className={success}>Оплата</button>
+          <button disabled={loadingAction} onClick={openRefusal} className={danger}>Отказ</button>
+        </>
+      );
+    }
+
+    return <span className="ui-badge">Завершено</span>;
   }
 
   const dashboardCards = [
@@ -240,13 +338,13 @@ export function CrmApp() {
   ];
 
   return (
-    <div className="grid min-h-screen grid-cols-[280px_minmax(0,1fr)] max-lg:grid-cols-[90px_minmax(0,1fr)] max-md:grid-cols-[86px_minmax(0,1fr)]">
-      <aside className="sticky top-0 flex h-screen flex-col border-r border-white/10 bg-[#24231f] p-4 text-stone-100 max-md:p-3">
+    <div className="crm-shell">
+      <aside className="crm-sidebar">
         <div className="mb-6 flex items-center gap-3 px-1 max-lg:justify-center">
-          <div className="grid size-11 place-items-center rounded-lg bg-gradient-to-br from-lime-200 via-teal-300 to-white font-black text-stone-950">OA</div>
+          <div className="crm-brand-mark">OA</div>
           <div className="max-lg:hidden">
-            <strong className="block">OptiAI CRM</strong>
-            <span className="text-sm text-stone-400">Revenue Operating System</span>
+            <strong className="block text-sm">OptiAI CRM</strong>
+            <span className="text-xs text-slate-400">Revenue operations</span>
           </div>
         </div>
 
@@ -257,10 +355,8 @@ export function CrmApp() {
               <button
                 key={id}
                 onClick={() => setActiveView(id)}
-                className={clsx(
-                  "flex min-h-11 items-center gap-3 rounded-lg px-3 text-left text-sm font-semibold transition max-lg:justify-center",
-                  activeView === id ? "bg-white/10 text-white" : "text-stone-300 hover:bg-white/5"
-                )}
+                className={clsx("crm-nav-item", activeView === id && "crm-nav-item-active")}
+                title={VIEW_TITLES[id]}
               >
                 <Icon size={20} />
                 <span className="max-lg:hidden">{VIEW_TITLES[id]}</span>
@@ -275,41 +371,40 @@ export function CrmApp() {
             await fetch("/api/auth/logout", { method: "POST" });
             setBootstrap(null);
           }}
-          className="mt-3 hidden size-11 place-items-center rounded-lg border border-white/10 bg-white/10 text-stone-100 hover:bg-white/15 max-lg:grid"
+          className="crm-nav-item mt-3 hidden place-items-center max-lg:grid"
         >
           <LogOut size={19} />
         </button>
 
-        <div className="mt-auto rounded-lg border border-white/10 bg-white/5 p-3 max-lg:hidden">
-          <span className="text-xs uppercase text-stone-400">Вы вошли как</span>
-          <strong className="mt-2 block text-sm text-white">{currentUser.fullName}</strong>
-          <span className="text-xs text-stone-400">{currentUser.email}</span>
-          <Badge>{currentUser.role}</Badge>
-          <p className="mt-3 text-xs text-stone-400">{roleDescriptions[currentUser.role]}</p>
+        <div className="mt-auto border-t border-white/10 pt-4 max-lg:hidden">
+          <span className="text-xs text-slate-400">Текущий аккаунт</span>
+          <strong className="mt-1 block truncate text-sm text-white">{currentUser.fullName}</strong>
+          <span className="block truncate text-xs text-slate-400">{currentUser.email}</span>
+          <span className="mt-2 inline-flex rounded-md bg-white/10 px-2 py-1 text-xs font-semibold text-slate-200">{currentUser.role}</span>
+          <p className="mt-3 text-xs leading-5 text-slate-400">{roleDescriptions[currentUser.role]}</p>
           <button
             onClick={async () => {
               await fetch("/api/auth/logout", { method: "POST" });
               setBootstrap(null);
             }}
-            className="mt-3 w-full rounded-md border border-white/10 bg-white/10 px-3 py-2 text-sm font-bold text-white hover:bg-white/15"
+            className="mt-3 flex min-h-9 w-full items-center justify-center gap-2 rounded-md border border-white/10 bg-white/5 px-3 text-sm font-semibold text-white hover:bg-white/10"
           >
-            Выйти
+            <LogOut size={16} /> Выйти
           </button>
         </div>
       </aside>
 
-      <main className="min-w-0 p-6 max-md:p-3">
-        <header className="mb-5 flex items-start justify-between gap-4 max-xl:flex-col">
+      <main className="crm-main">
+        <header className="crm-topbar mb-6 max-xl:items-start max-xl:flex-col">
           <div>
-            <p className="text-xs font-black uppercase text-teal-700">SEO + GEO на автопилоте</p>
-            <h1 className="text-4xl font-black tracking-normal text-stone-950 max-md:text-3xl">{VIEW_TITLES[activeView]}</h1>
-            <p className="mt-2 max-w-3xl text-sm text-stone-600">API-first CRM на Next.js, React, Tailwind и Supabase/PostgreSQL-модели: лиды, прогрев, звонки, подписки, AI-скоринг и удержание.</p>
+            <p className="text-xs font-semibold text-slate-500">OptiAI / {VIEW_TITLES[activeView]}</p>
+            <h1 className="mt-1 text-2xl font-bold text-[#202939]">{VIEW_TITLES[activeView]}</h1>
           </div>
 
           <div className="flex flex-wrap items-center justify-end gap-2">
             <div className="relative w-80 max-md:w-full">
-              <div className="flex min-h-11 items-center gap-2 rounded-lg border border-stone-200 bg-white px-3">
-              <Search size={18} className="text-stone-500" />
+              <div className="flex min-h-10 items-center gap-2 rounded-lg border border-[#D0D5DD] bg-white px-3 focus-within:border-[#536DFE] focus-within:ring-3 focus-within:ring-[#536DFE]/10">
+              <Search size={17} className="text-slate-500" />
                 <input
                   value={query}
                   onChange={(event) => setQuery(event.target.value)}
@@ -322,8 +417,8 @@ export function CrmApp() {
                 />
               </div>
               {query.trim() && (
-                <div className="absolute right-0 top-12 z-40 w-[min(520px,calc(100vw-120px))] rounded-lg border border-stone-200 bg-white p-2 shadow-2xl">
-                  {searchResults.length === 0 && <div className="px-3 py-2 text-sm text-stone-500">Ничего не найдено</div>}
+                <div className="absolute right-0 top-12 z-40 w-[min(520px,calc(100vw-120px))] rounded-lg border border-[#E5E7EB] bg-white p-2 shadow-[var(--shadow-popover)]">
+                  {searchResults.length === 0 && <div className="px-3 py-2 text-sm text-slate-500">Ничего не найдено</div>}
                   {searchResults.map((lead) => (
                     <button
                       key={lead.id}
@@ -331,28 +426,27 @@ export function CrmApp() {
                         openLead(lead);
                         setQuery("");
                       }}
-                      className="block w-full rounded-md px-3 py-2 text-left hover:bg-stone-50"
+                      className="block w-full rounded-md px-3 py-2 text-left hover:bg-slate-50"
                     >
-                      <strong className="block text-sm text-stone-950">{lead.companyName}</strong>
-                      <span className="block text-xs text-stone-600">{lead.contactName} · {lead.phone} · {STAGES[lead.stage]}</span>
+                      <strong className="block text-sm text-[#202939]">{lead.companyName}</strong>
+                      <span className="block text-xs text-slate-600">{lead.contactName} · {lead.phone} · {STAGES[lead.stage]}</span>
                     </button>
                   ))}
                   {searchResults.length > 0 && (
-                    <button onClick={() => setActiveView("pipeline")} className="mt-1 w-full rounded-md bg-stone-100 px-3 py-2 text-sm font-bold text-stone-800">Показать в воронке</button>
+                    <button onClick={() => setActiveView("pipeline")} className="ui-button ui-button-secondary mt-1 w-full">Показать в воронке</button>
                   )}
                 </div>
               )}
             </div>
-            <a
-              href={selectedLead ? phoneHref(selectedLead.phone) : "#"}
-              onClick={() => selectedLead && void runAction({ type: "record_call", payload: { leadId: selectedLead.id, ownerId: currentUser.id } }, "Звонок открыт на устройстве, CRM зафиксировала касание.")}
-              className="grid size-11 place-items-center rounded-lg border border-stone-200 bg-white text-stone-900"
-              aria-label="Позвонить текущему лиду"
-              title="Позвонить"
+            <button
+              onClick={() => selectedLead && openLead(selectedLead)}
+              className="ui-button ui-button-secondary ui-icon-button"
+              aria-label="Открыть текущего лида в воронке"
+              title="Открыть в воронке"
             >
               <PhoneCall size={19} />
-            </a>
-            <button onClick={() => setModal("newLead")} className="flex min-h-11 items-center gap-2 rounded-lg bg-stone-950 px-4 font-bold text-white">
+            </button>
+            <button onClick={() => setModal("newLead")} className="ui-button ui-button-primary">
               <Plus size={18} /> Новый лид
             </button>
           </div>
@@ -362,10 +456,10 @@ export function CrmApp() {
           <section className="grid gap-4">
             <div className="grid grid-cols-6 gap-3 max-2xl:grid-cols-3 max-lg:grid-cols-2 max-sm:grid-cols-1">
               {dashboardCards.map(([label, value, hint]) => (
-                <article key={label} className="rounded-lg border border-stone-200 bg-white/90 p-4 shadow-lg shadow-stone-900/5">
-                  <span className="text-sm text-stone-500">{label}</span>
-                  <strong className="mt-2 block text-2xl font-black text-stone-950">{value}</strong>
-                  <small className="text-stone-500">{hint}</small>
+                <article key={label} className="crm-kpi">
+                  <span className="text-xs font-semibold text-slate-500">{label}</span>
+                  <strong className="mt-2 block text-2xl font-bold tabular-nums text-[#202939]">{value}</strong>
+                  <small className="mt-1 block text-xs text-slate-500">{hint}</small>
                 </article>
               ))}
             </div>
@@ -380,9 +474,9 @@ export function CrmApp() {
                     .map((task) => {
                       const lead = state.leads.find((item) => item.id === task.leadId);
                       return (
-                        <button key={task.id} onClick={() => lead && openLead(lead)} className="rounded-lg border border-stone-200 bg-stone-50 p-3 text-left hover:border-teal-400">
-                          <strong className="block text-stone-950">{task.title}</strong>
-                          <span className="text-sm text-stone-600">{lead?.companyName} · {userName(task.ownerId)} · до {dateLabel(task.dueAt)}</span>
+                        <button key={task.id} onClick={() => lead && openLead(lead)} className="rounded-lg border border-[#E5E7EB] bg-[#F8FAFC] p-3 text-left transition-colors hover:border-[#AEB9FF]">
+                          <strong className="block text-[#202939]">{task.title}</strong>
+                          <span className="text-sm text-slate-600">{lead?.companyName} · {userName(task.ownerId)} · до {dateLabel(task.dueAt)}</span>
                         </button>
                       );
                     })}
@@ -394,13 +488,13 @@ export function CrmApp() {
                   {["Instagram", "Avito", "Cold Call", "Яндекс директ", "Сайт", "Telegram ads"].map((channel) => {
                     const count = state.leads.filter((lead) => lead.sourceChannel === channel).length;
                     return (
-                      <button key={channel} onClick={() => { setQuery(channel); setActiveView("pipeline"); }} className="rounded-lg border border-stone-200 bg-white p-3 text-left">
+                      <button key={channel} onClick={() => { setQuery(channel); setActiveView("pipeline"); }} className="rounded-lg border border-[#E5E7EB] bg-white p-3 text-left transition-colors hover:border-[#AEB9FF]">
                         <div className="flex items-center justify-between">
                           <strong>{channel}</strong>
-                          <span className="text-sm text-stone-500">{count} лидов</span>
+                          <span className="text-sm text-slate-500">{count} лидов</span>
                         </div>
-                        <div className="mt-2 h-2 rounded-full bg-stone-100">
-                          <div className="h-2 rounded-full bg-gradient-to-r from-teal-500 to-lime-300" style={{ width: `${Math.max(8, count * 24)}%` }} />
+                        <div className="mt-2 h-2 rounded-full bg-slate-100">
+                          <div className="h-2 rounded-full bg-[#536DFE]" style={{ width: `${Math.max(8, count * 24)}%` }} />
                         </div>
                       </button>
                     );
@@ -414,38 +508,34 @@ export function CrmApp() {
         {activeView === "pipeline" && (
           <section>
             <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-              <div className="inline-flex rounded-lg border border-stone-200 bg-white p-1">
+              <div className="inline-flex rounded-lg border border-[#E5E7EB] bg-white p-1">
                 {(["all", "hot", "warm", "cold"] as const).map((item) => (
-                  <button key={item} onClick={() => setTemperature(item)} className={clsx("rounded-md px-3 py-2 text-sm font-bold", temperature === item ? "bg-stone-950 text-white" : "text-stone-600")}>
+                  <button key={item} onClick={() => setTemperature(item)} className={clsx("rounded-md px-3 py-2 text-sm font-semibold transition-colors", temperature === item ? "bg-[#EEF1FF] text-[#4357D9]" : "text-slate-600 hover:bg-slate-50")}>
                     {item === "all" ? "Все" : item === "hot" ? "Горячие" : item === "warm" ? "Теплые" : "Холодные"}
                   </button>
                 ))}
               </div>
-              <span className="text-sm text-stone-600">При “Не дозвонились” CRM автоматически ставит перезвоны 1/3/7 дней.</span>
+              <span className="text-sm text-slate-600">При “Не дозвонились” CRM автоматически ставит перезвоны 1/3/7 дней.</span>
             </div>
             <div className="grid auto-cols-[285px] grid-flow-col gap-3 overflow-x-auto pb-3">
               {STAGES.map((stage, index) => (
-                <div key={stage} className="min-h-[560px] rounded-lg border border-stone-200 bg-white/70 p-3">
-                  <div className="mb-3 flex items-center justify-between text-sm text-stone-500">
-                    <strong className="text-stone-800">{stage}</strong>
-                    <span>{filteredLeads.filter((lead) => lead.stage === index).length}</span>
+                <div key={stage} className="crm-pipeline-column">
+                  <div className="mb-3 flex min-h-8 items-center justify-between gap-2 text-sm text-slate-500">
+                    <strong className="text-[13px] font-semibold text-[#344054]">{stage}</strong>
+                    <span className="grid size-6 place-items-center rounded-md bg-white text-xs font-semibold tabular-nums">{filteredLeads.filter((lead) => lead.stage === index).length}</span>
                   </div>
                   <div className="grid gap-3">
                     {filteredLeads
                       .filter((lead) => lead.stage === index)
                       .map((lead) => {
-                        const openRefusal = () => {
-                          setSelectedLeadId(lead.id);
-                          setModal("refusal");
-                        };
-                        const isDealDecision = lead.stage === 7;
-                        const isUpsell = lead.stage === 11;
-
                         return (
-                          <article key={lead.id} className={clsx("rounded-lg border bg-white p-3 shadow-sm", lead.temperature === "hot" ? "border-l-4 border-l-rose-500" : lead.temperature === "warm" ? "border-l-4 border-l-amber-500" : "border-l-4 border-l-teal-500")}>
-                            <button onClick={() => openLead(lead)} className="w-full text-left">
-                              <strong className="block">{lead.companyName}</strong>
-                              <span className="text-sm text-stone-600">{lead.contactName} · {lead.industry}</span>
+                          <article key={lead.id} className={clsx("crm-lead-card", selectedLeadId === lead.id && "crm-lead-card-selected")}>
+                            <button onClick={() => setSelectedLeadId(lead.id)} className="w-full text-left">
+                              <span className="flex items-center gap-2">
+                                <span className={clsx("size-2 rounded-full", lead.temperature === "hot" ? "bg-rose-500" : lead.temperature === "warm" ? "bg-amber-500" : "bg-slate-400")} />
+                                <strong className="block text-sm text-[#202939]">{lead.companyName}</strong>
+                              </span>
+                              <span className="mt-1 block text-xs text-slate-600">{lead.contactName} · {lead.industry}</span>
                             </button>
                             <div className="mt-3 flex flex-wrap gap-1 text-xs">
                               <Badge>{lead.sourceChannel}</Badge>
@@ -453,30 +543,13 @@ export function CrmApp() {
                               <Badge>{userName(lead.ownerId)}</Badge>
                             </div>
                             <div className="mt-3 flex flex-wrap gap-2">
-                              {isDealDecision && (
-                                <>
-                                  <button disabled={loadingAction} onClick={() => void runAction({ type: "move_stage", payload: { leadId: lead.id, stage: 8 } }, `${lead.companyName}: этап обновлен.`)} className="rounded-md bg-teal-50 px-2 py-1 text-xs font-bold text-teal-800">Следующий</button>
-                                  <button disabled={loadingAction} onClick={openRefusal} className="rounded-md bg-rose-100 px-2 py-1 text-xs font-bold text-rose-900">Отказ</button>
-                                </>
-                              )}
-                              {isUpsell && (
-                                <>
-                                  <button disabled={loadingAction} onClick={() => void runAction({ type: "mark_paid", payload: { leadId: lead.id, tariffId: lead.tariffId ?? state.tariffs[0].id } }, "Оплата отмечена.")} className="rounded-md bg-lime-100 px-2 py-1 text-xs font-bold text-lime-900">Оплата</button>
-                                  <button disabled={loadingAction} onClick={openRefusal} className="rounded-md bg-rose-100 px-2 py-1 text-xs font-bold text-rose-900">Отказ</button>
-                                </>
-                              )}
-                              {!isDealDecision && !isUpsell && (
-                                <>
-                                  <button disabled={loadingAction || lead.stage >= 12} onClick={() => void runAction({ type: "move_stage", payload: { leadId: lead.id, stage: Math.min(12, lead.stage + 1) } }, `${lead.companyName}: этап обновлен.`)} className="rounded-md bg-teal-50 px-2 py-1 text-xs font-bold text-teal-800">Следующий</button>
-                                  <button onClick={() => openLead(lead, "callcenter")} className="rounded-md bg-stone-100 px-2 py-1 text-xs font-bold text-stone-800">Звонок</button>
-                                  <button onClick={() => void runAction({ type: "mark_no_answer", payload: { leadId: lead.id, ownerId: lead.ownerId } }, "Недозвон зафиксирован: задачи на 1, 3 и 7 дней поставлены.")} className="rounded-md bg-amber-100 px-2 py-1 text-xs font-bold text-amber-900">Не дозвон</button>
-                                </>
-                              )}
+                              {renderPipelineActions(lead)}
+                              <button onClick={() => viewLead(lead)} className="ui-button ui-button-secondary min-h-8 px-2.5 py-1 text-xs">Детали</button>
                             </div>
                           </article>
                         );
                       })}
-              {filteredLeads.filter((lead) => lead.stage === index).length === 0 && <div className="rounded-lg border border-dashed border-stone-300 bg-white/60 p-3 text-sm text-stone-500">Нет сделок</div>}
+              {filteredLeads.filter((lead) => lead.stage === index).length === 0 && <div className="rounded-lg border border-dashed border-slate-300 bg-white p-3 text-center text-xs text-slate-500">Нет сделок</div>}
                   </div>
                 </div>
               ))}
@@ -490,12 +563,11 @@ export function CrmApp() {
             state={state}
             userName={userName}
             tariffName={tariffName}
-            onAction={runAction}
-            onRefusal={() => setModal("refusal")}
+            onOpenPipeline={() => openLead(selectedLead)}
           />
         )}
         {activeView === "lead" && !selectedLead && (
-          <EmptyState title="Карточек компаний пока нет" text="Добавьте первого лида через кнопку “Новый лид”. CRM не содержит демонстрационных компаний и ложных данных." action={<button onClick={() => setModal("newLead")} className="rounded-lg bg-stone-950 px-4 py-3 font-bold text-white">Создать лид</button>} />
+          <EmptyState title="Карточек компаний пока нет" text="Добавьте первого лида через кнопку “Новый лид”. CRM не содержит демонстрационных компаний и ложных данных." action={<button onClick={() => setModal("newLead")} className="ui-button ui-button-primary">Создать лид</button>} />
         )}
 
         {activeView === "callcenter" && (
@@ -504,14 +576,13 @@ export function CrmApp() {
               <div className="grid gap-3">
                 {state.leads.filter((lead) => lead.status !== "lost").length === 0 && <EmptyState title="Список обзвона пуст" text="После создания лидов здесь появятся реальные звонки менеджеров." />}
                 {state.leads.filter((lead) => lead.status !== "lost").map((lead) => (
-                  <div key={lead.id} className="flex items-center justify-between gap-3 rounded-lg border border-stone-200 bg-white p-3">
+                  <div key={lead.id} className="flex items-center justify-between gap-3 rounded-lg border border-[#E5E7EB] bg-white p-3">
                     <button onClick={() => openLead(lead)} className="text-left">
                       <strong className="block">{lead.companyName}</strong>
-                      <span className="text-sm text-stone-600">{lead.phone} · {lead.nextStep}</span>
+                      <span className="text-sm text-slate-600">{lead.phone} · {lead.nextStep}</span>
                     </button>
                     <div className="flex flex-wrap justify-end gap-2">
-                      <a href={phoneHref(lead.phone)} onClick={() => void runAction({ type: "record_call", payload: { leadId: lead.id, ownerId: currentUser.id } }, "Звонок открыт на устройстве, CRM зафиксировала касание.")} className="rounded-lg bg-teal-600 px-3 py-2 font-bold text-white">Звонок</a>
-                      <button onClick={() => void runAction({ type: "mark_no_answer", payload: { leadId: lead.id, ownerId: lead.ownerId } }, "Недозвон зафиксирован: задачи на 1, 3 и 7 дней поставлены.")} className="rounded-lg bg-amber-100 px-3 py-2 font-bold text-amber-900">Не дозвонились</button>
+                      <button onClick={() => openLead(lead)} className="ui-button ui-button-primary">В воронку</button>
                     </div>
                   </div>
                 ))}
@@ -524,14 +595,14 @@ export function CrmApp() {
                 {state.callRecords.slice(0, 5).map((call) => {
                   const lead = state.leads.find((item) => item.id === call.leadId);
                   return (
-                    <article key={call.id} className="rounded-lg border border-stone-200 bg-white p-4">
+                    <article key={call.id} className="rounded-lg border border-[#E5E7EB] bg-white p-4">
                       <strong>{lead?.companyName}</strong>
-                      <p className="mt-2 text-sm text-stone-700">{call.transcript}</p>
+                      <p className="mt-2 text-sm text-slate-700">{call.transcript}</p>
                       <div className="mt-3 grid grid-cols-2 gap-2 text-sm max-md:grid-cols-1">
                         <Badge>Интерес {call.interest}%</Badge>
                         <Badge>Вероятность {call.dealProbability}%</Badge>
                       </div>
-                      <p className="mt-3 rounded-lg bg-stone-50 p-3 text-sm">{call.summary}</p>
+                      <p className="mt-3 rounded-lg bg-slate-50 p-3 text-sm">{call.summary}</p>
                     </article>
                   );
                 })}
@@ -548,18 +619,18 @@ export function CrmApp() {
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <strong>{sequence.name}</strong>
-                      <p className="text-sm text-stone-600">{sequence.description}</p>
+                      <p className="text-sm text-slate-600">{sequence.description}</p>
                     </div>
-                    <button onClick={() => setModal("warmupStep")} className="rounded-lg bg-stone-950 px-3 py-2 font-bold text-white">Добавить шаг</button>
+                    <button onClick={() => setModal("warmupStep")} className="ui-button ui-button-primary">Добавить шаг</button>
                   </div>
                   {sequence.steps.map((step) => (
-                    <div key={step.id} className="grid grid-cols-[80px_1fr_auto] items-center gap-3 rounded-lg border border-stone-200 bg-white p-3 max-md:grid-cols-1">
-                      <span className="grid min-h-11 place-items-center rounded-lg bg-teal-50 font-black text-teal-800">День {step.day}</span>
+                    <div key={step.id} className="grid grid-cols-[80px_1fr_auto] items-center gap-3 rounded-lg border border-[#E5E7EB] bg-white p-3 max-md:grid-cols-1">
+                      <span className="grid min-h-11 place-items-center rounded-lg bg-[#EEF1FF] font-semibold text-[#4357D9]">День {step.day}</span>
                       <div>
                         <strong>{step.title}</strong>
-                        <p className="text-sm text-stone-600">{step.message}</p>
+                        <p className="text-sm text-slate-600">{step.message}</p>
                       </div>
-                      {selectedLead && <button onClick={() => void runAction({ type: "start_warmup", payload: { leadId: selectedLead.id, sequenceId: sequence.id } }, "Цепочка прогрева назначена.")} className="rounded-lg border border-teal-200 bg-teal-50 px-3 py-2 font-bold text-teal-800">Назначить</button>}
+                      <span className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-600">Назначение в воронке</span>
                     </div>
                   ))}
                 </div>
@@ -568,9 +639,9 @@ export function CrmApp() {
 
             <Panel title="Библиотека контента" subtitle="AI подбирает материал под боль клиента.">
               {["VSL OptiAI", "SEO-аудит", "Кейс клиента", "Аудит конкурентов", "Карта LLM-видимости"].map((item) => (
-                <button key={item} onClick={() => selectedLead && void runAction({ type: "send_message", payload: { leadId: selectedLead.id, channel: "Telegram", text: `Отправлен материал: ${item}` } }, `${item} отправлен текущему лиду.`)} className="mb-2 w-full rounded-lg border border-stone-200 bg-white p-3 text-left">
+                <button key={item} onClick={() => setActiveView("pipeline")} className="mb-2 w-full rounded-lg border border-[#E5E7EB] bg-white p-3 text-left transition-colors hover:border-[#AEB9FF]">
                   <strong>{item}</strong>
-                  <span className="block text-sm text-stone-600">Отправить в последний активный канал</span>
+                  <span className="block text-sm text-slate-600">Отправляется из этапа “Прогрев” в воронке</span>
                 </button>
               ))}
             </Panel>
@@ -584,12 +655,12 @@ export function CrmApp() {
               {state.subscriptions.map((subscription) => {
                 const lead = state.leads.find((item) => item.id === subscription.leadId);
                 return (
-                  <div key={subscription.id} className="grid grid-cols-[1.2fr_1fr_1fr_1fr_auto] items-center gap-3 rounded-lg border border-stone-200 bg-white p-3 max-xl:grid-cols-1">
+                  <div key={subscription.id} className="grid grid-cols-[1.2fr_1fr_1fr_1fr_auto] items-center gap-3 rounded-lg border border-[#E5E7EB] bg-white p-3 max-xl:grid-cols-1">
                     <strong>{lead?.companyName}</strong>
                     <span>{tariffName(subscription.tariffId)}</span>
                     <span>Платеж: {dateLabel(subscription.nextPaymentAt)}</span>
                     <span>Договор до {dateLabel(subscription.endsAt)}</span>
-                    <button onClick={() => void runAction({ type: "renew_subscription", payload: { subscriptionId: subscription.id } }, "Продление запущено.")} className="rounded-lg bg-amber-100 px-3 py-2 font-bold text-amber-900">Продлить</button>
+                    <button onClick={() => lead && openLead(lead)} className="ui-button ui-button-primary">В воронку</button>
                   </div>
                 );
               })}
@@ -605,36 +676,36 @@ export function CrmApp() {
                 subtitle="Руководитель управляет всеми ролями. РОП может добавлять менеджеров и аккаунт-менеджеров."
                 action={
                   canCreateUsers ? (
-                    <button onClick={() => setModal("newUser")} className="rounded-lg bg-stone-950 px-3 py-2 font-bold text-white">Добавить сотрудника</button>
+                    <button onClick={() => setModal("newUser")} className="ui-button ui-button-primary">Добавить сотрудника</button>
                   ) : (
-                    <span className="rounded-lg bg-stone-100 px-3 py-2 text-sm font-bold text-stone-600">Создает руководитель или РОП</span>
+                    <span className="rounded-lg bg-slate-100 px-3 py-2 text-sm font-semibold text-slate-600">Создает руководитель или РОП</span>
                   )
                 }
               >
                 <div className="grid gap-3">
                   {state.users.map((user) => (
-                    <article key={user.id} className="rounded-lg border border-stone-200 bg-white p-4">
+                    <article key={user.id} className="rounded-lg border border-[#E5E7EB] bg-white p-4">
                       <div className="flex items-center justify-between gap-3 max-md:flex-col max-md:items-start">
                         <div className="flex items-center gap-3">
-                          <div className="grid size-11 place-items-center rounded-lg bg-gradient-to-br from-lime-200 to-teal-300 font-black">{initials(user.fullName)}</div>
+                          <div className="grid size-11 place-items-center rounded-lg bg-[#EEF1FF] font-bold text-[#4357D9]">{initials(user.fullName)}</div>
                           <div>
                             <strong className="block">{user.fullName}</strong>
-                            <span className="text-sm text-stone-600">{user.position} · {user.email}</span>
+                            <span className="text-sm text-slate-600">{user.position} · {user.email}</span>
                           </div>
                         </div>
                         <Badge>{user.role}</Badge>
                       </div>
                       <div className="mt-3 grid grid-cols-4 gap-2 text-sm max-md:grid-cols-2">
-                        <span className="rounded-md bg-stone-50 p-2">{user.calls} звонков</span>
-                        <span className="rounded-md bg-stone-50 p-2">{user.meetings} встреч</span>
-                        <span className="rounded-md bg-stone-50 p-2">{money(user.revenue)}</span>
-                        <span className="rounded-md bg-stone-50 p-2">{state.leads.filter((lead) => lead.ownerId === user.id).length} сделок</span>
+                        <span className="rounded-md bg-slate-50 p-2">{user.calls} звонков</span>
+                        <span className="rounded-md bg-slate-50 p-2">{user.meetings} встреч</span>
+                        <span className="rounded-md bg-slate-50 p-2">{money(user.revenue)}</span>
+                        <span className="rounded-md bg-slate-50 p-2">{state.leads.filter((lead) => lead.ownerId === user.id).length} сделок</span>
                       </div>
                       <div className="mt-3 flex flex-wrap gap-2">
-                        <span className="rounded-md bg-teal-50 px-3 py-2 text-sm font-bold text-teal-800">Вход только по паролю</span>
+                        <span className="rounded-md bg-[#EEF1FF] px-3 py-2 text-sm font-semibold text-[#4357D9]">Вход только по паролю</span>
                         {currentUser.role === "Руководитель" && user.role !== "Руководитель" && (
                           <>
-                            <button onClick={() => void runAction({ type: "disable_user", payload: { userId: user.id } }, "Аккаунт отключен, сделки переназначены.")} className="rounded-md bg-stone-100 px-3 py-2 text-sm font-bold">Отключить</button>
+                            <button onClick={() => void runAction({ type: "disable_user", payload: { userId: user.id } }, "Аккаунт отключен, сделки переназначены.")} className="ui-button ui-button-secondary">Отключить</button>
                             <button onClick={() => window.confirm(`Удалить аккаунт ${user.fullName}? Это действие уберет пользователя из CRM.`) && void runAction({ type: "delete_user", payload: { userId: user.id } }, "Аккаунт удален из CRM.")} className="rounded-md bg-rose-100 px-3 py-2 text-sm font-bold text-rose-800">Удалить</button>
                           </>
                         )}
@@ -647,9 +718,9 @@ export function CrmApp() {
               <Panel title="Права ролей" subtitle="Ролевые ограничения из ТЗ.">
                 <div className="grid gap-3">
                   {(Object.keys(ROLE_PERMISSIONS) as Role[]).map((role) => (
-                    <div key={role} className="rounded-lg border border-stone-200 bg-white p-3">
+                    <div key={role} className="rounded-lg border border-[#E5E7EB] bg-white p-3">
                       <strong>{role}</strong>
-                      <p className="text-sm text-stone-600">{roleDescriptions[role]}</p>
+                      <p className="text-sm text-slate-600">{roleDescriptions[role]}</p>
                       <div className="mt-2 flex flex-wrap gap-1">{ROLE_PERMISSIONS[role].map((view) => <Badge key={view}>{VIEW_TITLES[view]}</Badge>)}</div>
                     </div>
                   ))}
@@ -661,13 +732,13 @@ export function CrmApp() {
               <div className="grid gap-2">
                 {state.leads.length === 0 && <EmptyState title="Назначать пока нечего" text="Сделки появятся после создания реальных лидов." />}
                 {state.leads.map((lead) => (
-                  <div key={lead.id} className="grid grid-cols-[1.2fr_1fr_1fr_auto] items-center gap-3 rounded-lg border border-stone-200 bg-white p-3 max-lg:grid-cols-1">
+                  <div key={lead.id} className="grid grid-cols-[1.2fr_1fr_1fr_auto] items-center gap-3 rounded-lg border border-[#E5E7EB] bg-white p-3 max-lg:grid-cols-1">
                     <strong>{lead.companyName}</strong>
                     <span>{STAGES[lead.stage]}</span>
-                    <select value={lead.ownerId} onChange={(event) => void runAction({ type: "assign_lead", payload: { leadId: lead.id, ownerId: event.target.value } }, "Ответственный изменен.")} className="rounded-md border border-stone-200 px-3 py-2">
+                    <select value={lead.ownerId} onChange={(event) => void runAction({ type: "assign_lead", payload: { leadId: lead.id, ownerId: event.target.value } }, "Ответственный изменен.")} className="ui-field">
                       {state.users.filter((user) => user.status === "active" && (user.role === "Менеджер" || user.role === "Аккаунт-менеджер")).map((user) => <option key={user.id} value={user.id}>{user.fullName}</option>)}
                     </select>
-                    <button onClick={() => openLead(lead)} className="rounded-md bg-stone-100 px-3 py-2 font-bold">Открыть</button>
+                    <button onClick={() => openLead(lead)} className="ui-button ui-button-secondary">Открыть</button>
                   </div>
                 ))}
               </div>
@@ -684,9 +755,9 @@ export function CrmApp() {
                 ["no_answer_14", "Нет ответа 14 дней", "Запустить отдельный прогрев"],
                 ["missed_call", "Не дозвонились", "Перезвонить через 1, 3 и 7 дней"]
               ].map(([key, title, detail]) => (
-                <button key={key} onClick={() => void runAction({ type: "run_automation", payload: { key: key as "no_answer_3" } }, "Автоматизация выполнена.")} className="mb-2 w-full rounded-lg border border-stone-200 bg-white p-3 text-left">
+                <button key={key} onClick={() => void runAction({ type: "run_automation", payload: { key: key as "no_answer_3" } }, "Автоматизация выполнена.")} className="mb-2 w-full rounded-lg border border-[#E5E7EB] bg-white p-3 text-left transition-colors hover:border-[#AEB9FF]">
                   <strong>{title}</strong>
-                  <span className="block text-sm text-stone-600">{detail}</span>
+                  <span className="block text-sm text-slate-600">{detail}</span>
                 </button>
               ))}
             </Panel>
@@ -700,12 +771,12 @@ export function CrmApp() {
                       setSelectedIntegrationId(integration.id);
                       setModal("integration");
                     }}
-                    className="rounded-lg border border-stone-200 bg-white p-3 text-left hover:border-teal-400"
+                    className="rounded-lg border border-[#E5E7EB] bg-white p-3 text-left transition-colors hover:border-[#AEB9FF]"
                   >
                     <strong className="block">{integration.name}</strong>
-                    <span className="text-sm text-stone-600">{integration.description}</span>
+                    <span className="text-sm text-slate-600">{integration.description}</span>
                     <Badge>{integration.status === "connected" ? "подключено" : integration.status === "needs_setup" ? "настроить" : "ошибка"}</Badge>
-                    <span className="mt-3 block rounded-md bg-stone-100 px-3 py-2 text-center text-sm font-bold">Настроить</span>
+                    <span className="mt-3 block rounded-md bg-[#EEF1FF] px-3 py-2 text-center text-sm font-semibold text-[#4357D9]">Настроить</span>
                   </button>
                 ))}
               </div>
@@ -717,7 +788,7 @@ export function CrmApp() {
       {modal && (
         <ModalShell onClose={() => setModal(null)}>
           {modal === "newUser" && <NewUserForm currentUser={currentUser} onSubmit={(action) => { setModal(null); void runAction(action, "Аккаунт создан."); }} />}
-          {modal === "newLead" && <NewLeadForm state={state} onSubmit={(action) => { setModal(null); void runAction(action, "Лид создан и задача поставлена."); }} />}
+          {modal === "newLead" && <NewLeadForm state={state} currentUser={currentUser} onSubmit={async (action) => { const ok = await runAction(action, "Лид создан и задача поставлена."); if (ok) setModal(null); }} />}
           {modal === "warmupStep" && <WarmupForm sequenceId={state.warmupSequences[0]?.id} onSubmit={(action) => { setModal(null); void runAction(action, "Шаг прогрева добавлен."); }} />}
           {modal === "refusal" && selectedLead && <RefusalForm leadId={selectedLead.id} onSubmit={(action) => { setModal(null); void runAction(action, "Отказ сохранен с причиной."); }} />}
           {modal === "integration" && (
@@ -729,7 +800,7 @@ export function CrmApp() {
         </ModalShell>
       )}
 
-      {toast && <div className="fixed bottom-5 right-5 z-50 max-w-md rounded-lg bg-stone-950 px-4 py-3 text-sm font-semibold text-white shadow-2xl">{toast}</div>}
+      {toast && <div className="crm-toast" role="status">{toast}</div>}
     </div>
   );
 }
@@ -760,39 +831,32 @@ function LoginScreen({ onLogin }: { onLogin: () => Promise<boolean> }) {
   }
 
   return (
-    <main className="grid min-h-screen place-items-center p-4">
-      <section className="grid w-[min(1040px,100%)] grid-cols-[.9fr_1.1fr] overflow-hidden rounded-lg border border-stone-200 bg-white shadow-2xl max-lg:grid-cols-1">
-        <div className="bg-[#24231f] p-8 text-white">
-          <div className="grid size-12 place-items-center rounded-lg bg-gradient-to-br from-lime-200 via-teal-300 to-white font-black text-stone-950">OA</div>
-          <h1 className="mt-8 text-4xl font-black">Вход в OptiAI CRM</h1>
-          <p className="mt-4 text-stone-300">Каждый сотрудник входит по своему email и паролю. После входа CRM показывает только доступные разделы и данные по роли.</p>
-          <div className="mt-8 grid gap-3 text-sm">
-            <div className="rounded-lg border border-white/10 bg-white/5 p-3">
-              <strong className="block">Нет публичного списка аккаунтов</strong>
-              <span className="text-stone-300">Логины и временные пароли выдает руководитель внутри CRM.</span>
-            </div>
-            <div className="rounded-lg border border-white/10 bg-white/5 p-3">
-              <strong className="block">Ролевой доступ</strong>
-              <span className="text-stone-300">Менеджер видит свои сделки, руководитель управляет командой и аккаунтами.</span>
-            </div>
+    <main className="grid min-h-[100dvh] place-items-center bg-[#F5F7FA] p-4">
+      <section className="grid w-[min(920px,100%)] grid-cols-[.85fr_1.15fr] overflow-hidden rounded-xl border border-[#E5E7EB] bg-white shadow-[0_12px_28px_rgb(16_24_40/0.10)] max-lg:grid-cols-1">
+        <div className="flex min-h-[520px] flex-col bg-[#151A25] p-8 text-white max-lg:min-h-0">
+          <div className="crm-brand-mark">OA</div>
+          <div className="my-auto py-10">
+            <h1 className="max-w-sm text-3xl font-bold leading-tight">Рабочее пространство OptiAI</h1>
+            <p className="mt-4 max-w-sm text-sm leading-6 text-slate-300">Продажи, задачи, звонки и подписки в одном защищенном интерфейсе.</p>
           </div>
+          <p className="text-xs leading-5 text-slate-400">Доступ к аккаунтам выдает руководитель. Данные и разделы ограничены ролью сотрудника.</p>
         </div>
 
-        <form onSubmit={submit} className="grid content-center gap-4 p-8">
+        <form onSubmit={submit} className="grid content-center gap-5 p-10 max-md:p-6">
           <div>
-            <p className="text-xs font-black uppercase text-teal-700">Защищенная сессия</p>
-            <h2 className="text-3xl font-black text-stone-950">Логин и пароль</h2>
+            <h2 className="text-2xl font-bold text-[#202939]">Вход в CRM</h2>
+            <p className="mt-2 text-sm text-slate-600">Введите рабочий email и пароль.</p>
           </div>
-          <label className="grid gap-1 text-sm font-bold text-stone-600">
+          <label className="ui-label">
             Email
-            <input value={email} onChange={(event) => setEmail(event.target.value)} type="email" autoComplete="username" required className="rounded-lg border border-stone-200 px-3 py-3 text-stone-950 outline-none focus:border-teal-500" />
+            <input value={email} onChange={(event) => setEmail(event.target.value)} type="email" autoComplete="username" required className="ui-field" />
           </label>
-          <label className="grid gap-1 text-sm font-bold text-stone-600">
+          <label className="ui-label">
             Пароль
-            <input value={password} onChange={(event) => setPassword(event.target.value)} type="password" autoComplete="current-password" required className="rounded-lg border border-stone-200 px-3 py-3 text-stone-950 outline-none focus:border-teal-500" />
+            <input value={password} onChange={(event) => setPassword(event.target.value)} type="password" autoComplete="current-password" required className="ui-field" />
           </label>
-          {error && <div className="rounded-lg bg-rose-50 p-3 text-sm font-bold text-rose-800">{error}</div>}
-          <button disabled={submitting} className="rounded-lg bg-stone-950 px-4 py-3 font-bold text-white">
+          {error && <div role="alert" className="rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm font-semibold text-rose-800">{error}</div>}
+          <button disabled={submitting} className="ui-button ui-button-primary w-full">
             {submitting ? "Входим..." : "Войти"}
           </button>
         </form>
@@ -803,34 +867,36 @@ function LoginScreen({ onLogin }: { onLogin: () => Promise<boolean> }) {
 
 function Panel({ title, subtitle, action, children }: { title: string; subtitle: string; action?: React.ReactNode; children: React.ReactNode }) {
   return (
-    <section className="rounded-lg border border-stone-200 bg-white/90 p-4 shadow-lg shadow-stone-900/5">
-      <div className="mb-4 flex items-start justify-between gap-3 max-md:flex-col">
+    <section className="ui-panel">
+      <div className="ui-panel-header max-md:flex-col">
         <div>
-          <h2 className="text-xl font-black text-stone-950">{title}</h2>
-          <p className="text-sm text-stone-600">{subtitle}</p>
+          <h2 className="text-base font-bold text-[#202939]">{title}</h2>
+          <p className="mt-1 text-sm text-slate-600">{subtitle}</p>
         </div>
         {action}
       </div>
-      {children}
+      <div className="ui-panel-body">{children}</div>
     </section>
   );
 }
 
 function Badge({ children }: { children: React.ReactNode }) {
-  return <span className="inline-flex rounded-full bg-stone-100 px-2 py-1 text-xs font-bold text-stone-700">{children}</span>;
+  return <span className="ui-badge">{children}</span>;
 }
 
 function EmptyState({ title, text, action }: { title: string; text: string; action?: React.ReactNode }) {
   return (
-    <div className="rounded-lg border border-dashed border-stone-300 bg-white/70 p-5 text-center">
-      <strong className="block text-stone-950">{title}</strong>
-      <p className="mx-auto mt-2 max-w-xl text-sm text-stone-600">{text}</p>
+    <div className="ui-empty">
+      <div>
+      <strong className="block text-[#202939]">{title}</strong>
+      <p className="mx-auto mt-2 max-w-xl text-sm text-slate-600">{text}</p>
       {action && <div className="mt-4">{action}</div>}
+      </div>
     </div>
   );
 }
 
-function LeadView({ lead, state, userName, tariffName, onAction, onRefusal }: { lead: Lead; state: CrmState; userName: (id: string) => string; tariffName: (id?: string) => string; onAction: (action: CrmAction, message: string) => Promise<void>; onRefusal: () => void }) {
+function LeadView({ lead, state, userName, tariffName, onOpenPipeline }: { lead: Lead; state: CrmState; userName: (id: string) => string; tariffName: (id?: string) => string; onOpenPipeline: () => void }) {
   const fields = [
     ["Компания", lead.companyName],
     ["Сайт", lead.site],
@@ -867,19 +933,16 @@ function LeadView({ lead, state, userName, tariffName, onAction, onRefusal }: { 
           </div>
           <div className="grid grid-cols-2 gap-2 max-md:grid-cols-1">
             {fields.map(([label, value]) => (
-              <div key={label} className="rounded-lg border border-stone-200 bg-white p-3">
-                <span className="text-xs font-bold uppercase text-stone-500">{label}</span>
-                <strong className="mt-1 block break-words text-stone-950">{value}</strong>
+              <div key={label} className="rounded-lg bg-[#F8FAFC] p-3">
+                <span className="text-xs font-semibold text-slate-500">{label}</span>
+                <strong className="mt-1 block break-words text-sm font-semibold text-[#202939]">{value}</strong>
               </div>
             ))}
           </div>
-          <div className="mt-4 flex flex-wrap gap-2">
-            <a href={phoneHref(lead.phone)} onClick={() => void onAction({ type: "record_call", payload: { leadId: lead.id, ownerId: lead.ownerId } }, "Звонок открыт на устройстве, CRM зафиксировала касание.")} className="rounded-lg bg-teal-600 px-3 py-2 font-bold text-white">Позвонить</a>
-            <button onClick={() => void onAction({ type: "mark_no_answer", payload: { leadId: lead.id, ownerId: lead.ownerId } }, "Недозвон зафиксирован: задачи на 1, 3 и 7 дней поставлены.")} className="rounded-lg bg-amber-100 px-3 py-2 font-bold text-amber-900">Не дозвонились</button>
-            <button onClick={() => void onAction({ type: "send_message", payload: { leadId: lead.id, channel: "Telegram", text: "Отправлено персональное касание из CRM." } }, "Сообщение отправлено.")} className="rounded-lg bg-stone-100 px-3 py-2 font-bold">Сообщение</button>
-            <button onClick={() => void onAction({ type: "start_warmup", payload: { leadId: lead.id, sequenceId: state.warmupSequences[0].id } }, "Прогрев запущен.")} className="rounded-lg bg-amber-100 px-3 py-2 font-bold text-amber-900">Прогрев</button>
-            <button onClick={() => void onAction({ type: "mark_paid", payload: { leadId: lead.id, tariffId: lead.tariffId ?? state.tariffs[0].id } }, "Оплата отмечена.")} className="rounded-lg bg-lime-100 px-3 py-2 font-bold text-lime-900">Оплата</button>
-            <button onClick={onRefusal} className="rounded-lg bg-rose-100 px-3 py-2 font-bold text-rose-900">Отказ</button>
+          <div className="mt-4 rounded-lg border border-[#C7D0FF] bg-[#EEF1FF] p-3">
+            <strong className="block text-[#3446B5]">Управление доступно в воронке</strong>
+            <p className="mt-1 text-sm text-[#4453A4]">Звонки, недозвоны, прогрев, оплата и отказ выполняются на соответствующем этапе сделки.</p>
+            <button onClick={onOpenPipeline} className="ui-button ui-button-primary mt-3">Открыть в воронке</button>
           </div>
         </Panel>
 
@@ -899,11 +962,11 @@ function LeadView({ lead, state, userName, tariffName, onAction, onRefusal }: { 
         <Panel title="История коммуникаций" subtitle="Сообщения, звонки, задачи, оплаты и прогревы хранятся в CRM.">
           <div className="grid gap-2">
             {activities.map((activity) => (
-              <div key={activity.id} className="grid grid-cols-[110px_1fr] gap-3 rounded-lg border border-stone-200 bg-white p-3 max-md:grid-cols-1">
-                <span className="text-sm text-stone-500">{dateLabel(activity.createdAt)}</span>
+              <div key={activity.id} className="grid grid-cols-[96px_1fr] gap-3 border-b border-[#E5E7EB] py-3 last:border-b-0 max-md:grid-cols-1">
+                <span className="text-xs text-slate-500">{dateLabel(activity.createdAt)}</span>
                 <div>
-                  <strong>{activity.title}</strong>
-                  <p className="text-sm text-stone-600">{activity.detail}</p>
+                  <strong className="text-sm text-[#202939]">{activity.title}</strong>
+                  <p className="mt-1 text-sm text-slate-600">{activity.detail}</p>
                 </div>
               </div>
             ))}
@@ -911,7 +974,7 @@ function LeadView({ lead, state, userName, tariffName, onAction, onRefusal }: { 
         </Panel>
 
         <Panel title="Подписка" subtitle="Срок договора, платежи и уведомления 30/14/7/3 дня.">
-          <div className="rounded-lg bg-stone-950 p-4 text-white">
+          <div className="rounded-lg bg-[#202939] p-4 text-white">
             <strong>{tariffName(lead.tariffId)}</strong>
             <p className="mt-2 text-sm text-stone-300">Следующий шаг: {lead.nextStep}</p>
           </div>
@@ -928,9 +991,9 @@ function LeadView({ lead, state, userName, tariffName, onAction, onRefusal }: { 
 
 function Info({ title, text }: { title: string; text: string }) {
   return (
-    <div className="rounded-lg bg-stone-50 p-3">
-      <strong className="block text-stone-950">{title}</strong>
-      <span className="text-sm text-stone-700">{text}</span>
+    <div className="rounded-lg bg-[#F8FAFC] p-3">
+      <strong className="block text-sm text-[#202939]">{title}</strong>
+      <span className="mt-1 block text-sm leading-5 text-slate-600">{text}</span>
     </div>
   );
 }
@@ -938,8 +1001,11 @@ function Info({ title, text }: { title: string; text: string }) {
 function ModalShell({ children, onClose }: { children: React.ReactNode; onClose: () => void }) {
   return (
     <div className="fixed inset-0 z-50">
-      <button aria-label="Закрыть" onClick={onClose} className="absolute inset-0 bg-stone-950/40" />
-      <section className="relative mx-auto mt-8 max-h-[calc(100vh-64px)] w-[min(680px,calc(100vw-32px))] overflow-auto rounded-lg border border-stone-200 bg-white p-5 shadow-2xl">
+      <button aria-label="Закрыть" onClick={onClose} className="ui-modal-backdrop" />
+      <section role="dialog" aria-modal="true" className="ui-modal">
+        <button type="button" aria-label="Закрыть окно" title="Закрыть" onClick={onClose} className="ui-button ui-button-secondary ui-icon-button absolute right-4 top-4 min-h-9 size-9">
+          <X size={17} />
+        </button>
         {children}
       </section>
     </div>
@@ -959,18 +1025,18 @@ function NewUserForm({ currentUser, onSubmit }: { currentUser: CrmUser; onSubmit
 
   return (
     <form onSubmit={submit} className="grid gap-3">
-      <h2 className="text-2xl font-black">Добавить сотрудника</h2>
+      <h2 className="pr-12 text-xl font-bold text-[#202939]">Добавить сотрудника</h2>
       <FormInput name="fullName" label="Имя и фамилия" required />
       <FormInput name="email" label="Email" type="email" required />
       <FormInput name="password" label="Временный пароль" type="password" required />
-      <label className="grid gap-1 text-sm font-bold text-stone-600">
+      <label className="ui-label">
         Роль
-        <select name="role" className="rounded-lg border border-stone-200 px-3 py-2 text-stone-950">
+        <select name="role" className="ui-field">
           {allowedRoles.map((role) => <option key={role}>{role}</option>)}
         </select>
       </label>
       <FormInput name="position" label="Должность" required />
-      <button className="rounded-lg bg-stone-950 px-4 py-3 font-bold text-white">Создать аккаунт</button>
+      <button className="ui-button ui-button-primary">Создать аккаунт</button>
     </form>
   );
 }
@@ -1038,8 +1104,8 @@ function IntegrationForm({ integration, onSubmit }: { integration?: CrmState["in
   return (
     <form onSubmit={submit} className="grid gap-3">
       <div>
-        <h2 className="text-2xl font-black">Настроить {currentIntegration.name}</h2>
-        <p className="mt-1 text-sm text-stone-600">{currentIntegration.description}</p>
+        <h2 className="pr-12 text-xl font-bold text-[#202939]">Настроить {currentIntegration.name}</h2>
+        <p className="mt-1 text-sm text-slate-600">{currentIntegration.description}</p>
       </div>
       {fields.map((field) => (
         <FormInput
@@ -1052,12 +1118,17 @@ function IntegrationForm({ integration, onSubmit }: { integration?: CrmState["in
           required
         />
       ))}
-      <button className="rounded-lg bg-stone-950 px-4 py-3 font-bold text-white">Сохранить интеграцию</button>
+      <button className="ui-button ui-button-primary">Сохранить интеграцию</button>
     </form>
   );
 }
 
-function NewLeadForm({ state, onSubmit }: { state: CrmState; onSubmit: (action: CrmAction) => void }) {
+function NewLeadForm({ state, currentUser, onSubmit }: { state: CrmState; currentUser: CrmUser; onSubmit: (action: CrmAction) => void }) {
+  const activeOwners = state.users.filter((user) => user.status === "active");
+  const salesOwners = activeOwners.filter((user) => user.role === "Менеджер" || user.role === "Аккаунт-менеджер" || user.role === "РОП");
+  const ownerOptions = salesOwners.length > 0 ? salesOwners : activeOwners.filter((user) => user.role === "Руководитель");
+  const fallbackOwnerId = ownerOptions[0]?.id ?? currentUser.id;
+
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const data = Object.fromEntries(new FormData(event.currentTarget).entries()) as Record<string, string>;
@@ -1085,7 +1156,7 @@ function NewLeadForm({ state, onSubmit }: { state: CrmState; onSubmit: (action: 
         geoPotential: "Новый",
         sourceChannel: data.sourceChannel,
         sourceDetail: data.sourceDetail || "ручное создание",
-        ownerId: data.ownerId,
+        ownerId: data.ownerId || fallbackOwnerId,
         pain: data.pain || "выявить боль",
         currentPromotionChannels: data.currentPromotionChannels || "уточнить",
         budget: data.budget || "уточнить",
@@ -1097,7 +1168,7 @@ function NewLeadForm({ state, onSubmit }: { state: CrmState; onSubmit: (action: 
 
   return (
     <form onSubmit={submit} className="grid grid-cols-2 gap-3 max-md:grid-cols-1">
-      <h2 className="col-span-full text-2xl font-black">Новый лид</h2>
+      <h2 className="col-span-full pr-12 text-xl font-bold text-[#202939]">Новый лид</h2>
       <FormInput name="companyName" label="Компания" required />
       <FormInput name="site" label="Сайт" />
       <FormInput name="industry" label="Отрасль" />
@@ -1119,26 +1190,27 @@ function NewLeadForm({ state, onSubmit }: { state: CrmState; onSubmit: (action: 
       <FormInput name="pain" label="Боль клиента" />
       <FormInput name="currentPromotionChannels" label="Текущие каналы" />
       <FormInput name="budget" label="Бюджет" />
-      <label className="grid gap-1 text-sm font-bold text-stone-600">
+      <label className="ui-label">
         Канал
-        <select name="sourceChannel" className="rounded-lg border border-stone-200 px-3 py-2 text-stone-950">
+        <select name="sourceChannel" className="ui-field">
           {["Cold Call", "Instagram", "Avito", "Telegram ads", "Яндекс директ", "Сайт"].map((channel) => <option key={channel}>{channel}</option>)}
         </select>
       </label>
       <FormInput name="sourceDetail" label="Источник внутри канала" />
-      <label className="grid gap-1 text-sm font-bold text-stone-600">
+      <label className="ui-label">
         Ответственный
-        <select name="ownerId" className="rounded-lg border border-stone-200 px-3 py-2 text-stone-950">
-          {state.users.filter((user) => user.status === "active" && (user.role === "Менеджер" || user.role === "Аккаунт-менеджер")).map((user) => <option key={user.id} value={user.id}>{user.fullName}</option>)}
+        <select name="ownerId" className="ui-field">
+          {ownerOptions.map((user) => <option key={user.id} value={user.id}>{user.fullName} · {user.role}</option>)}
         </select>
+        {salesOwners.length === 0 && <span className="text-xs font-medium text-amber-700">Пока нет менеджеров, лид будет назначен руководителю.</span>}
       </label>
-      <label className="grid gap-1 text-sm font-bold text-stone-600">
+      <label className="ui-label">
         Тариф
-        <select name="tariffId" className="rounded-lg border border-stone-200 px-3 py-2 text-stone-950">
+        <select name="tariffId" className="ui-field">
           {state.tariffs.map((tariff) => <option key={tariff.id} value={tariff.id}>{tariff.name} · {money(tariff.price)}</option>)}
         </select>
       </label>
-      <button className="col-span-full rounded-lg bg-stone-950 px-4 py-3 font-bold text-white">Создать лид</button>
+      <button className="ui-button ui-button-primary col-span-full">Создать лид</button>
     </form>
   );
 }
@@ -1153,11 +1225,11 @@ function WarmupForm({ sequenceId, onSubmit }: { sequenceId?: string; onSubmit: (
 
   return (
     <form onSubmit={submit} className="grid gap-3">
-      <h2 className="text-2xl font-black">Новый шаг прогрева</h2>
+      <h2 className="pr-12 text-xl font-bold text-[#202939]">Новый шаг прогрева</h2>
       <FormInput name="day" label="День" type="number" required />
       <FormInput name="title" label="Название" required />
       <FormInput name="message" label="Сообщение/цель" required />
-      <button className="rounded-lg bg-stone-950 px-4 py-3 font-bold text-white">Добавить</button>
+      <button className="ui-button ui-button-primary">Добавить</button>
     </form>
   );
 }
@@ -1171,10 +1243,10 @@ function RefusalForm({ leadId, onSubmit }: { leadId: string; onSubmit: (action: 
 
   return (
     <form onSubmit={submit} className="grid gap-3">
-      <h2 className="text-2xl font-black">Причина отказа</h2>
-      <label className="grid gap-1 text-sm font-bold text-stone-600">
+      <h2 className="pr-12 text-xl font-bold text-[#202939]">Причина отказа</h2>
+      <label className="ui-label">
         Причина
-        <select name="reason" className="rounded-lg border border-stone-200 px-3 py-2 text-stone-950">
+        <select name="reason" className="ui-field">
           <option>Не готов к бюджету</option>
           <option>Нет срочности</option>
           <option>Уже есть агентство</option>
@@ -1182,25 +1254,25 @@ function RefusalForm({ leadId, onSubmit }: { leadId: string; onSubmit: (action: 
           <option>Вернуться через 3 месяца</option>
         </select>
       </label>
-      <button className="rounded-lg bg-rose-700 px-4 py-3 font-bold text-white">Сохранить отказ</button>
+      <button className="ui-button bg-[#C43B4D] text-white hover:bg-[#A92F40]">Сохранить отказ</button>
     </form>
   );
 }
 
 function FormInput({ name, label, type = "text", required = false, defaultValue = "", placeholder }: { name: string; label: string; type?: string; required?: boolean; defaultValue?: string; placeholder?: string }) {
   return (
-    <label className="grid gap-1 text-sm font-bold text-stone-600">
+    <label className="ui-label">
       {label}
-      <input name={name} type={type} required={required} defaultValue={defaultValue} placeholder={placeholder} className="rounded-lg border border-stone-200 px-3 py-2 text-stone-950 outline-none focus:border-teal-500" />
+      <input name={name} type={type} required={required} defaultValue={defaultValue} placeholder={placeholder} className="ui-field" />
     </label>
   );
 }
 
 function SelectBool({ name, label }: { name: string; label: string }) {
   return (
-    <label className="grid gap-1 text-sm font-bold text-stone-600">
+    <label className="ui-label">
       {label}
-      <select name={name} className="rounded-lg border border-stone-200 px-3 py-2 text-stone-950">
+      <select name={name} className="ui-field">
         <option value="yes">Да</option>
         <option value="no">Нет</option>
       </select>

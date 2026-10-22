@@ -34,8 +34,10 @@ export async function POST(request: Request) {
   try {
     await applyCrmActionAsync(action);
     state = await scopedStateForAsync(currentUser.id);
-  } catch {
-    return NextResponse.json({ error: "CRM не смогла сохранить действие в Supabase." }, { status: 500 });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("CRM action failed", { actionType: action.type, message, error });
+    return NextResponse.json({ error: `CRM не смогла сохранить действие: ${message}` }, { status: 500 });
   }
   return NextResponse.json({
     currentUser,

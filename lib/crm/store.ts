@@ -16,6 +16,7 @@ const credentialsKey = "credentials";
 let suppressLocalPersistence = false;
 
 function supabasePersistenceEnabled() {
+  if (process.env.CRM_FORCE_LOCAL === "true") return false;
   return Boolean(process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY);
 }
 
@@ -287,8 +288,14 @@ export function applyCrmAction(action: CrmAction): CrmState {
   }
 
   if (action.type === "create_lead") {
+    const fallbackOwner = state.users.find((user) => user.status === "active" && user.id === action.payload.ownerId)
+      ?? state.users.find((user) => user.status === "active" && user.role === "Менеджер")
+      ?? state.users.find((user) => user.status === "active" && user.role === "РОП")
+      ?? state.users.find((user) => user.status === "active" && user.role === "Руководитель");
+    if (!fallbackOwner) throw new Error("Нет активного сотрудника, которому можно назначить лида.");
     const lead: Lead = {
       ...action.payload,
+      ownerId: fallbackOwner.id,
       id: id("lead"),
       stage: 0,
       status: "sales",
