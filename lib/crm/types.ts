@@ -8,6 +8,7 @@ export type TaskPriority = "high" | "medium" | "low";
 export type ViewId =
   | "dashboard"
   | "pipeline"
+  | "messengers"
   | "lead"
   | "callcenter"
   | "warmup"
@@ -166,11 +167,15 @@ export type CrmState = {
   integrations: Integration[];
 };
 
+export type LeadUpdate = Partial<Omit<Lead, "id" | "status" | "score" | "temperature" | "createdAt">>;
+
 export type CrmAction =
   | { type: "create_user"; payload: Pick<CrmUser, "fullName" | "email" | "role" | "position"> & { password: string } }
   | { type: "disable_user"; payload: { userId: string } }
   | { type: "delete_user"; payload: { userId: string } }
   | { type: "create_lead"; payload: Omit<Lead, "id" | "stage" | "status" | "score" | "temperature" | "createdAt"> }
+  | { type: "update_lead"; payload: { leadId: string; changes: LeadUpdate } }
+  | { type: "delete_lead"; payload: { leadId: string } }
   | { type: "move_stage"; payload: { leadId: string; stage: number } }
   | { type: "assign_lead"; payload: { leadId: string; ownerId: string } }
   | { type: "record_call"; payload: { leadId: string; ownerId: string } }
@@ -202,15 +207,16 @@ export const STAGES = [
 ] as const;
 
 export const ROLE_PERMISSIONS: Record<Role, ViewId[]> = {
-  Руководитель: ["dashboard", "pipeline", "lead", "callcenter", "warmup", "subscriptions", "team", "automations"],
-  РОП: ["dashboard", "pipeline", "lead", "callcenter", "warmup", "subscriptions", "team"],
-  Менеджер: ["pipeline", "lead", "callcenter", "warmup"],
-  "Аккаунт-менеджер": ["dashboard", "lead", "callcenter", "subscriptions"]
+  Руководитель: ["dashboard", "pipeline", "messengers", "lead", "callcenter", "warmup", "subscriptions", "team", "automations"],
+  РОП: ["dashboard", "pipeline", "messengers", "lead", "callcenter", "warmup", "subscriptions", "team"],
+  Менеджер: ["pipeline", "messengers", "lead", "callcenter", "warmup"],
+  "Аккаунт-менеджер": ["dashboard", "messengers", "lead", "callcenter", "subscriptions"]
 };
 
 export const VIEW_TITLES: Record<ViewId, string> = {
   dashboard: "Дашборд",
   pipeline: "Воронка",
+  messengers: "Мессенджеры",
   lead: "Карточка",
   callcenter: "Call Center",
   warmup: "Прогрев",

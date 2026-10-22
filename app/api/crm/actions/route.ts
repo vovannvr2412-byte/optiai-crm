@@ -9,13 +9,21 @@ const actionSchema = z.object({
   payload: z.unknown()
 });
 
+const updateLeadPayloadSchema = z.object({
+  leadId: z.string().min(1),
+  changes: z.record(z.string(), z.unknown())
+});
+
+const deleteLeadPayloadSchema = z.object({ leadId: z.string().min(1) });
+
 export async function POST(request: Request) {
   const userId = await getSessionUserId();
   if (!userId) {
     return NextResponse.json({ error: "Требуется вход" }, { status: 401 });
   }
 
-  const currentUser = (await getCrmStateAsync()).users.find((user) => user.id === userId && user.status === "active");
+  const fullState = await getCrmStateAsync();
+  const currentUser = fullState.users.find((user) => user.id === userId && user.status === "active");
   if (!currentUser) {
     return NextResponse.json({ error: "Пользователь не найден" }, { status: 401 });
   }
@@ -26,7 +34,13 @@ export async function POST(request: Request) {
   }
 
   const action = parsed.data as CrmAction;
-  if (!canRunAction(currentUser, action)) {
+  if (action.type === "update_lead" && !updateLeadPayloadSchema.safeParse(action.payload).success) {
+    return NextResponse.json({ error: "Проверьте поля формы редактирования лида" }, { status: 400 });
+  }
+  if (action.type === "delete_lead" && !deleteLeadPayloadSchema.safeParse(action.payload).success) {
+    return NextResponse.json({ error: "Некорректный идентификатор лида" }, { status: 400 });
+  }
+  if (!canRunAction(currentUser, action, fullState)) {
     return NextResponse.json({ error: "Недостаточно прав" }, { status: 403 });
   }
 
@@ -46,7 +60,7 @@ export async function POST(request: Request) {
   });
 }
 
-function canRunAction(user: CrmUser, action: CrmAction) {
+function canRunAction(user: CrmUser, action: CrmAction, state: Awaited<ReturnType<typeof getCrmStateAsync>>) {
   if (user.role === "Руководитель") return true;
   if (action.type === "create_user") {
     return user.role === "РОП" && (action.payload.role === "Менеджер" || action.payload.role === "Аккаунт-менеджер");
@@ -56,5 +70,32 @@ function canRunAction(user: CrmUser, action: CrmAction) {
   if (action.type === "assign_lead" || action.type === "toggle_integration" || action.type === "configure_integration" || action.type === "run_automation") {
     return false;
   }
+
+  if (action.type === "create_lead") return action.payload.ownerId === user.id;
+
+  const leadId = leadIdFromAction(action);
+  if (leadId) {
+    const lead = state.leads.find((item) => item.id === leadId);
+    if (!lead || lead.ownerId !== user.id) return false;
+    if (user.role === "Аккаунт-менеджер" && lead.status !== "client") return false;
+    if (action.type === "update_lead" && action.payload.changes.ownerId && action.payload.changes.ownerId !== user.id) return false;
+  }
   return true;
+}
+
+function leadIdFromAction(action: CrmAction) {
+  if (
+    action.type === "update_lead"
+    || action.type === "delete_lead"
+    || action.type === "move_stage"
+    || action.type === "record_call"
+    || action.type === "mark_no_answer"
+    || action.type === "send_message"
+    || action.type === "start_warmup"
+    || action.type === "mark_paid"
+    || action.type === "mark_refused"
+  ) {
+    return action.payload.leadId;
+  }
+  return null;
 }

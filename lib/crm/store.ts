@@ -1,7 +1,7 @@
 import { createSeedState } from "./seed";
 import { disableCredential, getCredentialsSnapshot, hydrateCredentialsSnapshot, registerCredential } from "@/lib/auth/credentials";
 import { createServiceSupabaseClient } from "@/lib/supabase/server";
-import { STAGES, type CrmAction, type CrmState, type Lead, type LeadTemperature, type Role } from "./types";
+import { STAGES, type CrmAction, type CrmState, type Lead, type LeadTemperature, type LeadUpdate, type Role } from "./types";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
@@ -235,6 +235,20 @@ function dateLabelForTask(daysFromNow: number) {
   return new Intl.DateTimeFormat("ru-RU", { day: "2-digit", month: "long", year: "numeric" }).format(new Date(dateOnly(daysFromNow)));
 }
 
+function leadStatusForStage(stage: number): Lead["status"] {
+  if (stage === 12) return "lost";
+  if (stage >= 9) return "client";
+  if (stage >= 6) return "warmup";
+  return "sales";
+}
+
+const editableLeadFields: (keyof LeadUpdate)[] = [
+  "companyName", "site", "industry", "companySize", "region", "contactName", "contactRole", "phone", "email",
+  "telegram", "whatsapp", "max", "hasSeo", "hasContext", "hasMarketer", "hasAgency", "brandedQueries",
+  "llmVisibility", "geoPotential", "stage", "sourceChannel", "sourceDetail", "ownerId", "pain",
+  "currentPromotionChannels", "budget", "nextStep", "refusalReason", "tariffId"
+];
+
 export function applyCrmAction(action: CrmAction): CrmState {
   const state = suppressLocalPersistence && globalForCrm.optiCrmState ? globalForCrm.optiCrmState : getCrmState();
 
@@ -310,11 +324,63 @@ export function applyCrmAction(action: CrmAction): CrmState {
     addTask(state, lead.id, lead.ownerId, "Найти контакт и сделать первый звонок", 0, "medium");
   }
 
+  if (action.type === "update_lead") {
+    const lead = state.leads.find((item) => item.id === action.payload.leadId);
+    if (!lead) throw new Error("Лид не найден.");
+
+    const requestedChanges = action.payload.changes;
+    const changes: LeadUpdate = {};
+    editableLeadFields.forEach((field) => {
+      const value = requestedChanges[field];
+      if (value !== undefined) (changes as Record<string, unknown>)[field] = value;
+    });
+    const nextStage = changes.stage === undefined ? lead.stage : Math.trunc(changes.stage);
+    if (nextStage < 0 || nextStage >= STAGES.length) throw new Error("Некорректный этап воронки.");
+    if (changes.ownerId !== undefined) {
+      const owner = state.users.find((user) => user.id === changes.ownerId && user.status === "active");
+      if (!owner) throw new Error("Выбранный ответственный недоступен.");
+    }
+
+    const nextCompanyName = (changes.companyName ?? lead.companyName).trim();
+    const nextContactName = (changes.contactName ?? lead.contactName).trim();
+    const nextPhone = (changes.phone ?? lead.phone).trim();
+    const nextRefusalReason = changes.refusalReason ?? lead.refusalReason;
+    if (!nextCompanyName || !nextContactName || !nextPhone) {
+      throw new Error("Укажите компанию, контактное лицо и телефон.");
+    }
+    if (nextStage === 12 && !nextRefusalReason?.trim()) throw new Error("Для этапа «Отказ» укажите причину отказа.");
+
+    Object.assign(lead, changes, {
+      stage: nextStage,
+      companyName: nextCompanyName,
+      contactName: nextContactName,
+      phone: nextPhone
+    });
+    lead.status = leadStatusForStage(lead.stage);
+    lead.score = scoreLead(lead);
+    lead.temperature = temperature(lead.score);
+    addActivity(state, lead.id, "system", "Карточка лида обновлена", `Актуальный этап: ${STAGES[lead.stage]}.`);
+  }
+
+  if (action.type === "delete_lead") {
+    const lead = state.leads.find((item) => item.id === action.payload.leadId);
+    if (!lead) throw new Error("Лид уже удален или не найден.");
+    state.leads = state.leads.filter((item) => item.id !== lead.id);
+    state.tasks = state.tasks.filter((item) => item.leadId !== lead.id);
+    state.activities = state.activities.filter((item) => item.leadId !== lead.id);
+    state.callRecords = state.callRecords.filter((item) => item.leadId !== lead.id);
+    state.subscriptions = state.subscriptions.filter((item) => item.leadId !== lead.id);
+    state.payments = state.payments.filter((item) => item.leadId !== lead.id);
+  }
+
   if (action.type === "move_stage") {
     const lead = state.leads.find((item) => item.id === action.payload.leadId);
     if (lead) {
-      lead.stage = action.payload.stage;
-      lead.status = lead.stage === 12 ? "lost" : lead.stage >= 9 ? "client" : lead.stage >= 6 ? "warmup" : "sales";
+      const nextStage = Math.trunc(action.payload.stage);
+      if (nextStage < 0 || nextStage >= STAGES.length) throw new Error("Некорректный этап воронки.");
+      if (nextStage === 12 && !lead.refusalReason?.trim()) throw new Error("Переведите лида в отказ через действие с указанием причины.");
+      lead.stage = nextStage;
+      lead.status = leadStatusForStage(lead.stage);
       lead.score = scoreLead(lead);
       lead.temperature = temperature(lead.score);
       lead.lastContactAt = today();

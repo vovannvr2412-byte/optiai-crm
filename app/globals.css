@@ -113,6 +113,26 @@ textarea:focus-visible {
 .crm-nav-item:hover { color: #fff; background: rgb(255 255 255 / 0.06); }
 .crm-nav-item-active { color: #fff; background: rgb(83 109 254 / 0.2); box-shadow: inset 2px 0 0 var(--accent); }
 
+.crm-logout {
+  display: flex;
+  min-height: 40px;
+  width: 100%;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 12px;
+  border: 1px solid rgb(255 255 255 / 0.12);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  color: #fff;
+  background: rgb(255 255 255 / 0.05);
+  font-size: 13px;
+  font-weight: 700;
+  transition: background-color 160ms ease, border-color 160ms ease;
+}
+
+.crm-logout:hover { border-color: rgb(255 255 255 / 0.22); background: rgb(255 255 255 / 0.1); }
+
 .crm-main { min-width: 0; padding: 0 28px 32px; }
 
 .crm-topbar {
@@ -195,11 +215,56 @@ textarea:focus-visible {
 .ui-modal { position: fixed; top: 32px; left: 50%; z-index: var(--z-modal); width: min(720px, calc(100vw - 32px)); max-height: calc(100dvh - 64px); overflow: auto; transform: translateX(-50%); border-radius: var(--radius-lg); padding: 22px; background: var(--surface); box-shadow: var(--shadow-popover); }
 
 .crm-kpi { min-height: 116px; border: 1px solid var(--border); border-radius: var(--radius-md); padding: 16px; background: var(--surface); }
-.crm-pipeline-column { min-height: 540px; border: 1px solid var(--border); border-radius: var(--radius-md); padding: 10px; background: var(--surface-muted); }
-.crm-lead-card { border: 1px solid var(--border); border-radius: var(--radius-md); padding: 12px; background: var(--surface); transition: border-color 160ms ease, box-shadow 160ms ease; }
+.crm-pipeline-layout { display: grid; grid-template-columns: minmax(0, 1fr) 340px; align-items: start; gap: 16px; }
+.crm-pipeline-column { min-height: 540px; border: 1px solid var(--border); border-radius: var(--radius-md); padding: 10px; background: var(--surface-muted); transition: border-color 160ms ease, background-color 160ms ease, box-shadow 160ms ease; }
+.crm-pipeline-column-target { border-color: var(--accent); background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent); }
+.crm-lead-card { border: 1px solid var(--border); border-radius: var(--radius-md); padding: 14px; background: var(--surface); transition: border-color 160ms ease, box-shadow 160ms ease, opacity 160ms ease, transform 160ms ease; }
 .crm-lead-card:hover { border-color: #b8c1ff; box-shadow: 0 3px 8px rgb(16 24 40 / 0.06); }
-.crm-lead-card-selected { border-color: var(--accent); box-shadow: 0 0 0 2px rgb(83 109 254 / 0.12); }
+.crm-lead-card-selected { border-color: var(--accent); box-shadow: 0 0 0 2px rgb(83 109 254 / 0.16); }
+.crm-lead-card-dragging { opacity: 0.58; transform: scale(0.98); }
+.crm-lead-card-saving { pointer-events: none; opacity: 0.68; }
+.crm-selected-indicator { display: inline-flex; min-height: 23px; flex: 0 0 auto; align-items: center; gap: 4px; border-radius: 999px; padding: 3px 7px; color: #3446b5; background: var(--accent-soft); font-size: 11px; font-weight: 750; }
+.crm-lead-detail { position: sticky; top: 96px; max-height: calc(100dvh - 116px); overflow: auto; border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 18px; background: var(--surface); }
 .crm-toast { position: fixed; right: 20px; bottom: 20px; z-index: var(--z-toast); max-width: 420px; border-radius: var(--radius-md); padding: 12px 15px; color: #fff; background: #202939; box-shadow: var(--shadow-popover); font-size: 13px; font-weight: 650; }
+
+.messenger-layout {
+  position: relative;
+  display: grid;
+  height: calc(100dvh - 112px);
+  min-height: 560px;
+  grid-template-columns: minmax(250px, 310px) minmax(360px, 1fr) minmax(230px, 280px);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+
+.messenger-dialogs,
+.messenger-chat,
+.messenger-details { min-width: 0; min-height: 0; background: var(--surface); }
+.messenger-dialogs { display: grid; grid-template-rows: auto minmax(0, 1fr); border-right: 1px solid var(--border); }
+.messenger-dialog-list { overflow-y: auto; }
+.messenger-search-input { padding-left: 36px; }
+.messenger-dialog-row { display: flex; width: 100%; align-items: flex-start; gap: 10px; border-bottom: 1px solid var(--border); padding: 12px; text-align: left; transition: background-color 150ms ease; }
+.messenger-dialog-row:hover { background: var(--surface-muted); }
+.messenger-dialog-row-active { background: var(--accent-soft); box-shadow: inset 3px 0 0 var(--accent); }
+.messenger-avatar { display: grid; width: 36px; height: 36px; flex: 0 0 auto; place-items: center; border-radius: 50%; color: #344054; background: #e9edf2; font-size: 11px; font-weight: 800; }
+.messenger-channel { display: inline-flex; min-height: 19px; flex: 0 0 auto; align-items: center; border-radius: 5px; padding: 1px 5px; font-size: 9px; font-weight: 800; }
+.messenger-channel-telegram { color: #075985; background: #e0f2fe; }
+.messenger-channel-whatsapp { color: #166534; background: #dcfce7; }
+.messenger-channel-max { color: #6b21a8; background: #f3e8ff; }
+.messenger-unread { display: grid; min-width: 20px; height: 20px; flex: 0 0 auto; place-items: center; border-radius: 999px; padding-inline: 5px; color: #fff; background: var(--accent); font-size: 10px; font-weight: 800; }
+
+.messenger-chat { display: grid; grid-template-rows: auto minmax(0, 1fr) auto auto; background: #f7f9fc; }
+.messenger-chat-header { display: flex; min-height: 64px; align-items: center; gap: 10px; border-bottom: 1px solid var(--border); padding: 10px 14px; background: var(--surface); }
+.messenger-message-list { display: flex; min-height: 0; flex-direction: column; gap: 10px; overflow-y: auto; padding: 18px; }
+.messenger-bubble { width: fit-content; max-width: min(76%, 620px); border: 1px solid var(--border); border-radius: 8px; padding: 9px 11px; color: #344054; background: var(--surface); box-shadow: 0 1px 2px rgb(16 24 40 / 0.04); }
+.messenger-bubble-in { align-self: flex-start; }
+.messenger-bubble-out { align-self: flex-end; border-color: #cfd6ff; color: #263264; background: #eef1ff; }
+.messenger-bubble-failed { border-color: #f2b8c0; color: #8f2434; background: var(--danger-soft); }
+.messenger-composer { display: grid; grid-template-columns: minmax(0, 1fr) 40px; align-items: end; gap: 8px; border-top: 1px solid var(--border); padding: 12px; background: var(--surface); }
+.messenger-details { display: grid; grid-template-rows: auto minmax(0, 1fr); border-left: 1px solid var(--border); }
+.messenger-details-backdrop { position: fixed; inset: 0; z-index: 44; background: rgb(16 24 40 / 0.4); }
 
 ::-webkit-scrollbar { width: 9px; height: 9px; }
 ::-webkit-scrollbar-thumb { border: 2px solid transparent; border-radius: 999px; background: #b8c0cc; background-clip: padding-box; }
@@ -209,7 +274,25 @@ textarea:focus-visible {
   .crm-shell { grid-template-columns: 82px minmax(0, 1fr); }
   .crm-sidebar { padding-inline: 12px; }
   .crm-nav-item { justify-content: center; padding-inline: 0; }
+  .crm-logout { min-height: 48px; flex-direction: column; gap: 3px; padding-inline: 2px; font-size: 10px; }
   .crm-main { padding-inline: 20px; }
+}
+
+@media (max-width: 1280px) {
+  .crm-pipeline-layout { grid-template-columns: minmax(0, 1fr); }
+  .crm-pipeline-layout > :first-child { grid-row: 2; }
+  .crm-lead-detail { position: static; grid-row: 1; max-height: none; }
+  .messenger-layout { grid-template-columns: minmax(250px, 310px) minmax(360px, 1fr); }
+  .messenger-details { position: fixed; top: 0; right: 0; z-index: 45; width: min(360px, calc(100vw - 32px)); height: 100dvh; transform: translateX(100%); border-left: 1px solid var(--border); box-shadow: var(--shadow-popover); transition: transform 180ms ease; }
+  .messenger-details-open { transform: translateX(0); }
+}
+
+@media (max-width: 900px) {
+  .messenger-layout { height: calc(100dvh - 164px); min-height: 500px; grid-template-columns: minmax(0, 1fr); }
+  .messenger-dialogs { border-right: 0; }
+  .messenger-dialogs-hidden-mobile,
+  .messenger-chat-hidden-mobile { display: none; }
+  .messenger-bubble { max-width: 88%; }
 }
 
 @media (max-width: 640px) {

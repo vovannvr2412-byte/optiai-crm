@@ -1,27 +1,28 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import {
-  Activity,
-  BarChart3,
   Bot,
   BriefcaseBusiness,
   CalendarClock,
   CheckCircle2,
-  ChevronRight,
   Flame,
   LayoutDashboard,
   LogOut,
-  MessageSquare,
+  MessagesSquare,
+  Pencil,
   PhoneCall,
   Plus,
   Search,
   ShieldCheck,
+  Trash2,
   UsersRound,
   X
 } from "lucide-react";
 import { ROLE_PERMISSIONS, STAGES, VIEW_TITLES, type CrmAction, type CrmState, type CrmUser, type Lead, type Role, type ViewId } from "@/lib/crm/types";
+import { MessengerCenter } from "@/components/messenger-center";
+import type { MessengerConnection } from "@/lib/messaging/types";
 
 type Metrics = {
   leads: number;
@@ -40,11 +41,12 @@ type Bootstrap = {
   metrics: Metrics;
 };
 
-type Modal = "newUser" | "newLead" | "warmupStep" | "refusal" | "integration" | null;
+type Modal = "newUser" | "newLead" | "editLead" | "deleteLead" | "warmupStep" | "refusal" | "integration" | null;
 
 const navItems: { id: ViewId; icon: typeof LayoutDashboard }[] = [
   { id: "dashboard", icon: LayoutDashboard },
   { id: "pipeline", icon: BriefcaseBusiness },
+  { id: "messengers", icon: MessagesSquare },
   { id: "lead", icon: ShieldCheck },
   { id: "callcenter", icon: PhoneCall },
   { id: "warmup", icon: Flame },
@@ -82,23 +84,30 @@ function phoneHref(phone: string) {
   return normalized ? `tel:${normalized}` : "#";
 }
 
+function leadStatusForStage(stage: number): Lead["status"] {
+  if (stage === 12) return "lost";
+  if (stage >= 9) return "client";
+  if (stage >= 6) return "warmup";
+  return "sales";
+}
+
 export function CrmApp() {
   const [bootstrap, setBootstrap] = useState<Bootstrap | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
   const [activeView, setActiveView] = useState<ViewId>("dashboard");
-  const [selectedLeadId, setSelectedLeadId] = useState("l-nord");
+  const [selectedLeadId, setSelectedLeadId] = useState("");
   const [query, setQuery] = useState("");
   const [temperature, setTemperature] = useState<"all" | "hot" | "warm" | "cold">("all");
   const [modal, setModal] = useState<Modal>(null);
   const [selectedIntegrationId, setSelectedIntegrationId] = useState("");
   const [toast, setToast] = useState("");
   const [loadingAction, setLoadingAction] = useState(false);
+  const [draggingLeadId, setDraggingLeadId] = useState("");
+  const [dropStage, setDropStage] = useState<number | null>(null);
+  const [movingLeadIds, setMovingLeadIds] = useState<Set<string>>(() => new Set());
+  const suppressLeadClickRef = useRef("");
 
-  useEffect(() => {
-    void load();
-  }, []);
-
-  async function load() {
+  const load = useCallback(async () => {
     const response = await fetch("/api/crm/bootstrap", { cache: "no-store" });
     if (response.status === 401) {
       setBootstrap(null);
@@ -107,46 +116,63 @@ export function CrmApp() {
     }
     const data = (await response.json()) as Bootstrap;
     setBootstrap(data);
-    if (!data.state.leads.some((lead) => lead.id === selectedLeadId)) {
+    const allowedForUser = ROLE_PERMISSIONS[data.currentUser.role];
+    setActiveView((current) => allowedForUser.includes(current) ? current : allowedForUser[0]);
+    const rememberedLeadId = window.sessionStorage.getItem("optiai:selectedLeadId") ?? "";
+    if (data.state.leads.some((lead) => lead.id === rememberedLeadId)) {
+      setSelectedLeadId(rememberedLeadId);
+    } else {
       setSelectedLeadId(data.state.leads[0]?.id ?? "");
     }
     setAuthChecked(true);
     return true;
-  }
+  }, []);
+
+  useEffect(() => {
+    // Initial bootstrap is an external API synchronization, not derived client state.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void load();
+  }, [load]);
 
   async function runAction(action: CrmAction, message: string) {
     setLoadingAction(true);
-    const response = await fetch("/api/crm/actions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(action)
-    });
-    if (response.status === 401) {
-      setBootstrap(null);
-      setToast("Сессия закончилась. Войдите заново.");
-      setLoadingAction(false);
+    try {
+      const response = await fetch("/api/crm/actions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(action)
+      });
+      if (response.status === 401) {
+        setBootstrap(null);
+        setToast("Сессия закончилась. Войдите заново.");
+        return false;
+      }
+      if (!response.ok) {
+        const data = (await response.json().catch(() => null)) as { error?: string } | null;
+        setToast(data?.error || "Не удалось выполнить действие.");
+        return false;
+      }
+      const data = (await response.json()) as Bootstrap;
+      setBootstrap(data);
+      if (action.type === "create_lead") {
+        setQuery("");
+        setTemperature("all");
+        setActiveView("pipeline");
+        setSelectedLeadId(data.state.leads[0]?.id ?? "");
+      } else if (action.type === "delete_lead" && action.payload.leadId === selectedLeadId) {
+        setSelectedLeadId("");
+      } else if (selectedLeadId && !data.state.leads.some((lead) => lead.id === selectedLeadId)) {
+        setSelectedLeadId("");
+      }
+      setToast(message);
+      window.setTimeout(() => setToast(""), 2800);
+      return true;
+    } catch {
+      setToast("Сервер недоступен. Изменения не сохранены.");
       return false;
-    }
-    if (!response.ok) {
-      const data = (await response.json().catch(() => null)) as { error?: string } | null;
-      setToast(data?.error || "Не удалось выполнить действие.");
+    } finally {
       setLoadingAction(false);
-      return false;
     }
-    const data = (await response.json()) as Bootstrap;
-    setBootstrap(data);
-    if (action.type === "create_lead") {
-      setQuery("");
-      setTemperature("all");
-      setActiveView("pipeline");
-      setSelectedLeadId(data.state.leads[0]?.id ?? "");
-    } else if (!data.state.leads.some((lead) => lead.id === selectedLeadId)) {
-      setSelectedLeadId(data.state.leads[0]?.id ?? "");
-    }
-    setToast(message);
-    window.setTimeout(() => setToast(""), 2800);
-    setLoadingAction(false);
-    return true;
   }
 
   const state = bootstrap?.state;
@@ -156,10 +182,11 @@ export function CrmApp() {
   const canCreateUsers = currentUser?.role === "Руководитель" || currentUser?.role === "РОП";
 
   useEffect(() => {
-    if (!allowedViews.includes(activeView)) setActiveView(allowedViews[0]);
-  }, [activeView, allowedViews]);
+    if (selectedLeadId) window.sessionStorage.setItem("optiai:selectedLeadId", selectedLeadId);
+    else window.sessionStorage.removeItem("optiai:selectedLeadId");
+  }, [selectedLeadId]);
 
-  const selectedLead = useMemo(() => state?.leads.find((lead) => lead.id === selectedLeadId) ?? state?.leads[0], [selectedLeadId, state?.leads]);
+  const selectedLead = useMemo(() => state?.leads.find((lead) => lead.id === selectedLeadId), [selectedLeadId, state?.leads]);
 
   const filteredLeads = useMemo(() => {
     const value = query.trim().toLowerCase();
@@ -242,6 +269,31 @@ export function CrmApp() {
     return tariff ? `${tariff.name} · ${money(tariff.price)}` : "тариф не выбран";
   }
 
+  async function moveLeadToStage(lead: Lead, targetStage: number) {
+    if (!bootstrap || loadingAction || targetStage === lead.stage || targetStage < 0 || targetStage >= STAGES.length || movingLeadIds.has(lead.id)) return false;
+    const previous = bootstrap;
+    setSelectedLeadId(lead.id);
+    setMovingLeadIds((current) => new Set(current).add(lead.id));
+    setBootstrap({
+      ...bootstrap,
+      state: {
+        ...bootstrap.state,
+        leads: bootstrap.state.leads.map((item) => item.id === lead.id ? { ...item, stage: targetStage, status: leadStatusForStage(targetStage) } : item)
+      }
+    });
+    const ok = await runAction(
+      { type: "move_stage", payload: { leadId: lead.id, stage: targetStage } },
+      `${lead.companyName}: этап изменен на «${STAGES[targetStage]}».`
+    );
+    if (!ok) setBootstrap(previous);
+    setMovingLeadIds((current) => {
+      const next = new Set(current);
+      next.delete(lead.id);
+      return next;
+    });
+    return ok;
+  }
+
   function renderPipelineActions(lead: Lead) {
     if (!state || !currentUser) return null;
 
@@ -257,35 +309,36 @@ export function CrmApp() {
     const success = "ui-button ui-button-success min-h-8 px-2.5 py-1 text-xs";
 
     if (lead.stage === 0) {
-      return <button disabled={loadingAction} onClick={() => void runAction({ type: "move_stage", payload: { leadId: lead.id, stage: 1 } }, `${lead.companyName}: контакт найден.`)} className={primary}>Контакт найден</button>;
+      return <button disabled={loadingAction} onClick={() => void moveLeadToStage(lead, 1)} className={primary}>Далее: контакт найден</button>;
     }
 
     if (lead.stage === 1) {
-      return <button disabled={loadingAction} onClick={() => void runAction({ type: "move_stage", payload: { leadId: lead.id, stage: 2 } }, `${lead.companyName}: назначен первый звонок.`)} className={primary}>Первый звонок</button>;
+      return <button disabled={loadingAction} onClick={() => void moveLeadToStage(lead, 2)} className={primary}>Далее: первый звонок</button>;
     }
 
     if (lead.stage === 2 || lead.stage === 3) {
       return (
         <>
           <a href={phoneHref(lead.phone)} onClick={() => void runAction({ type: "record_call", payload: { leadId: lead.id, ownerId: currentUser.id } }, "Звонок открыт на устройстве, CRM зафиксировала разговор.")} className={primary}>Звонок</a>
+          <button disabled={loadingAction} onClick={() => void moveLeadToStage(lead, 4)} className={primary}>Далее: разговор состоялся</button>
           <button disabled={loadingAction} onClick={() => void runAction({ type: "mark_no_answer", payload: { leadId: lead.id, ownerId: lead.ownerId } }, "Недозвон зафиксирован: задачи на 1, 3 и 7 дней поставлены.")} className={warning}>Не дозвон</button>
         </>
       );
     }
 
     if (lead.stage === 4) {
-      return <button disabled={loadingAction} onClick={() => void runAction({ type: "move_stage", payload: { leadId: lead.id, stage: 5 } }, `${lead.companyName}: аудит отправлен.`)} className={primary}>Отправить аудит</button>;
+      return <button disabled={loadingAction} onClick={() => void moveLeadToStage(lead, 5)} className={primary}>Далее: аудит отправлен</button>;
     }
 
     if (lead.stage === 5) {
-      return <button disabled={loadingAction} onClick={() => void runAction({ type: "start_warmup", payload: { leadId: lead.id, sequenceId: state.warmupSequences[0]?.id ?? "" } }, "Прогрев запущен по сценарию OptiAI.")} className={warning}>Запустить прогрев</button>;
+      return <button disabled={loadingAction} onClick={() => void runAction({ type: "start_warmup", payload: { leadId: lead.id, sequenceId: state.warmupSequences[0]?.id ?? "" } }, "Прогрев запущен по сценарию OptiAI.")} className={warning}>Далее: запустить прогрев</button>;
     }
 
     if (lead.stage === 6) {
       return (
         <>
           <button disabled={loadingAction} onClick={() => void runAction({ type: "send_message", payload: { leadId: lead.id, channel: "Telegram", text: "Отправлено касание прогрева по текущему сценарию." } }, "Касание прогрева отправлено.")} className={neutral}>Касание</button>
-          <button disabled={loadingAction} onClick={() => void runAction({ type: "move_stage", payload: { leadId: lead.id, stage: 7 } }, `${lead.companyName}: перешел к решению.`)} className={primary}>Сделка/отказ</button>
+          <button disabled={loadingAction} onClick={() => void moveLeadToStage(lead, 7)} className={primary}>Далее: сделка/отказ</button>
         </>
       );
     }
@@ -293,25 +346,25 @@ export function CrmApp() {
     if (lead.stage === 7) {
       return (
         <>
-          <button disabled={loadingAction} onClick={() => void runAction({ type: "move_stage", payload: { leadId: lead.id, stage: 8 } }, `${lead.companyName}: перешел к оплате.`)} className={primary}>Следующий</button>
+          <button disabled={loadingAction} onClick={() => void moveLeadToStage(lead, 8)} className={primary}>Далее: оплата</button>
           <button disabled={loadingAction} onClick={openRefusal} className={danger}>Отказ</button>
         </>
       );
     }
 
     if (lead.stage === 8) {
-      return <button disabled={loadingAction} onClick={() => void runAction({ type: "mark_paid", payload: { leadId: lead.id, tariffId: lead.tariffId ?? state.tariffs[0].id } }, "Оплата отмечена, клиент подключен.")} className={success}>Отметить оплату</button>;
+      return <button disabled={loadingAction} onClick={() => void runAction({ type: "mark_paid", payload: { leadId: lead.id, tariffId: lead.tariffId ?? state.tariffs[0].id } }, "Оплата отмечена, клиент подключен.")} className={success}>Далее: отметить оплату</button>;
     }
 
     if (lead.stage === 9) {
-      return <button disabled={loadingAction} onClick={() => void runAction({ type: "move_stage", payload: { leadId: lead.id, stage: 10 } }, `${lead.companyName}: поставлен на продление.`)} className={primary}>К продлению</button>;
+      return <button disabled={loadingAction} onClick={() => void moveLeadToStage(lead, 10)} className={primary}>Далее: продление</button>;
     }
 
     if (lead.stage === 10) {
       return (
         <>
           <button disabled={loadingAction || !subscription} onClick={() => subscription && void runAction({ type: "renew_subscription", payload: { subscriptionId: subscription.id } }, "Продление запущено.")} className={warning}>Продлить</button>
-          <button disabled={loadingAction} onClick={() => void runAction({ type: "move_stage", payload: { leadId: lead.id, stage: 11 } }, `${lead.companyName}: переведен в апселл.`)} className={primary}>Апселл</button>
+          <button disabled={loadingAction} onClick={() => void moveLeadToStage(lead, 11)} className={primary}>Далее: апселл</button>
         </>
       );
     }
@@ -364,34 +417,23 @@ export function CrmApp() {
             ))}
         </nav>
 
-        <button
-          aria-label="Выйти из аккаунта"
-          title="Выйти"
-          onClick={async () => {
-            await fetch("/api/auth/logout", { method: "POST" });
-            setBootstrap(null);
-          }}
-          className="crm-nav-item mt-3 hidden place-items-center max-lg:grid"
-        >
-          <LogOut size={19} />
-        </button>
-
         <div className="mt-auto border-t border-white/10 pt-4 max-lg:hidden">
           <span className="text-xs text-slate-400">Текущий аккаунт</span>
           <strong className="mt-1 block truncate text-sm text-white">{currentUser.fullName}</strong>
           <span className="block truncate text-xs text-slate-400">{currentUser.email}</span>
           <span className="mt-2 inline-flex rounded-md bg-white/10 px-2 py-1 text-xs font-semibold text-slate-200">{currentUser.role}</span>
           <p className="mt-3 text-xs leading-5 text-slate-400">{roleDescriptions[currentUser.role]}</p>
-          <button
-            onClick={async () => {
-              await fetch("/api/auth/logout", { method: "POST" });
-              setBootstrap(null);
-            }}
-            className="mt-3 flex min-h-9 w-full items-center justify-center gap-2 rounded-md border border-white/10 bg-white/5 px-3 text-sm font-semibold text-white hover:bg-white/10"
-          >
-            <LogOut size={16} /> Выйти
-          </button>
         </div>
+        <button
+          aria-label="Выйти из аккаунта"
+          onClick={async () => {
+            await fetch("/api/auth/logout", { method: "POST" });
+            setBootstrap(null);
+          }}
+          className="crm-logout"
+        >
+          <LogOut size={17} /> <span>Выйти</span>
+        </button>
       </aside>
 
       <main className="crm-main">
@@ -517,44 +559,145 @@ export function CrmApp() {
               </div>
               <span className="text-sm text-slate-600">При “Не дозвонились” CRM автоматически ставит перезвоны 1/3/7 дней.</span>
             </div>
-            <div className="grid auto-cols-[285px] grid-flow-col gap-3 overflow-x-auto pb-3">
-              {STAGES.map((stage, index) => (
-                <div key={stage} className="crm-pipeline-column">
-                  <div className="mb-3 flex min-h-8 items-center justify-between gap-2 text-sm text-slate-500">
-                    <strong className="text-[13px] font-semibold text-[#344054]">{stage}</strong>
-                    <span className="grid size-6 place-items-center rounded-md bg-white text-xs font-semibold tabular-nums">{filteredLeads.filter((lead) => lead.stage === index).length}</span>
-                  </div>
-                  <div className="grid gap-3">
-                    {filteredLeads
-                      .filter((lead) => lead.stage === index)
-                      .map((lead) => {
-                        return (
-                          <article key={lead.id} className={clsx("crm-lead-card", selectedLeadId === lead.id && "crm-lead-card-selected")}>
-                            <button onClick={() => setSelectedLeadId(lead.id)} className="w-full text-left">
-                              <span className="flex items-center gap-2">
-                                <span className={clsx("size-2 rounded-full", lead.temperature === "hot" ? "bg-rose-500" : lead.temperature === "warm" ? "bg-amber-500" : "bg-slate-400")} />
-                                <strong className="block text-sm text-[#202939]">{lead.companyName}</strong>
-                              </span>
-                              <span className="mt-1 block text-xs text-slate-600">{lead.contactName} · {lead.industry}</span>
-                            </button>
-                            <div className="mt-3 flex flex-wrap gap-1 text-xs">
-                              <Badge>{lead.sourceChannel}</Badge>
-                              <Badge>AI {lead.score}</Badge>
-                              <Badge>{userName(lead.ownerId)}</Badge>
-                            </div>
-                            <div className="mt-3 flex flex-wrap gap-2">
-                              {renderPipelineActions(lead)}
-                              <button onClick={() => viewLead(lead)} className="ui-button ui-button-secondary min-h-8 px-2.5 py-1 text-xs">Детали</button>
-                            </div>
-                          </article>
-                        );
-                      })}
-              {filteredLeads.filter((lead) => lead.stage === index).length === 0 && <div className="rounded-lg border border-dashed border-slate-300 bg-white p-3 text-center text-xs text-slate-500">Нет сделок</div>}
-                  </div>
-                </div>
-              ))}
+            <div className="crm-pipeline-layout">
+              <div className="grid auto-cols-[300px] grid-flow-col gap-3 overflow-x-auto pb-3">
+                {STAGES.map((stage, index) => {
+                  const stageLeads = filteredLeads.filter((lead) => lead.stage === index);
+                  return (
+                    <div
+                      key={stage}
+                      className={clsx("crm-pipeline-column", dropStage === index && draggingLeadId && "crm-pipeline-column-target")}
+                      onDragEnter={(event) => {
+                        if (!draggingLeadId) return;
+                        event.preventDefault();
+                        setDropStage(index);
+                      }}
+                      onDragOver={(event) => {
+                        if (!draggingLeadId) return;
+                        event.preventDefault();
+                        event.dataTransfer.dropEffect = "move";
+                      }}
+                      onDrop={(event) => {
+                        event.preventDefault();
+                        const lead = state.leads.find((item) => item.id === draggingLeadId);
+                        setDropStage(null);
+                        setDraggingLeadId("");
+                        if (!lead || lead.stage === index) return;
+                        setSelectedLeadId(lead.id);
+                        if (index === 12) {
+                          setModal("refusal");
+                          return;
+                        }
+                        void moveLeadToStage(lead, index);
+                      }}
+                    >
+                      <div className="mb-3 flex min-h-8 items-center justify-between gap-2 text-sm text-slate-500">
+                        <strong className="text-[13px] font-semibold text-[#344054]">{stage}</strong>
+                        <span className="grid size-6 place-items-center rounded-md bg-white text-xs font-semibold tabular-nums">{stageLeads.length}</span>
+                      </div>
+                      <div className="grid gap-3">
+                        {stageLeads.map((lead) => {
+                          const isSelected = selectedLeadId === lead.id;
+                          const isMoving = movingLeadIds.has(lead.id);
+                          return (
+                            <article
+                              key={lead.id}
+                              draggable={!isMoving}
+                              onDragStart={(event) => {
+                                event.dataTransfer.effectAllowed = "move";
+                                event.dataTransfer.setData("text/plain", lead.id);
+                                suppressLeadClickRef.current = lead.id;
+                                setDraggingLeadId(lead.id);
+                                setSelectedLeadId(lead.id);
+                              }}
+                              onDragEnd={() => {
+                                setDraggingLeadId("");
+                                setDropStage(null);
+                                window.setTimeout(() => {
+                                  if (suppressLeadClickRef.current === lead.id) suppressLeadClickRef.current = "";
+                                }, 200);
+                              }}
+                              className={clsx(
+                                "crm-lead-card",
+                                isSelected && "crm-lead-card-selected",
+                                draggingLeadId === lead.id && "crm-lead-card-dragging",
+                                isMoving && "crm-lead-card-saving"
+                              )}
+                            >
+                              <button
+                                onClick={() => {
+                                  if (suppressLeadClickRef.current === lead.id) {
+                                    suppressLeadClickRef.current = "";
+                                    return;
+                                  }
+                                  setSelectedLeadId(lead.id);
+                                }}
+                                className="w-full text-left"
+                              >
+                                <span className="flex items-start justify-between gap-3">
+                                  <span className="min-w-0">
+                                    <strong className="block truncate text-[15px] font-bold text-[#202939]">{lead.companyName}</strong>
+                                    <span className="mt-1 block truncate text-[13px] font-medium text-slate-700">{lead.contactName}</span>
+                                  </span>
+                                  {isSelected && <span className="crm-selected-indicator"><CheckCircle2 size={13} /> Выбран</span>}
+                                </span>
+                                <span className="mt-3 grid gap-1 text-xs leading-5 text-slate-600">
+                                  <span className="truncate">{lead.phone}{lead.email && lead.email !== "уточнить" ? ` · ${lead.email}` : ""}</span>
+                                  <span className="truncate">{userName(lead.ownerId)} · {lead.sourceChannel}</span>
+                                </span>
+                              </button>
+                              <div className="mt-3 flex items-center justify-between gap-2 border-t border-slate-100 pt-3">
+                                <div className="flex items-center gap-1.5">
+                                  <span className={clsx("size-2 rounded-full", lead.temperature === "hot" ? "bg-rose-500" : lead.temperature === "warm" ? "bg-amber-500" : "bg-slate-400")} />
+                                  <span className="text-xs font-semibold text-slate-600">AI {lead.score}</span>
+                                </div>
+                                <div className="flex gap-1">
+                                  <button
+                                    type="button"
+                                    aria-label={`Редактировать ${lead.companyName}`}
+                                    title="Редактировать"
+                                    onClick={() => { setSelectedLeadId(lead.id); setModal("editLead"); }}
+                                    className="ui-button ui-button-secondary ui-icon-button min-h-8 size-8"
+                                  >
+                                    <Pencil size={14} />
+                                  </button>
+                                  <button type="button" onClick={() => viewLead(lead)} className="ui-button ui-button-secondary min-h-8 px-2.5 py-1 text-xs">Карточка</button>
+                                </div>
+                              </div>
+                            </article>
+                          );
+                        })}
+                        {stageLeads.length === 0 && <div className="rounded-lg border border-dashed border-slate-300 bg-white p-3 text-center text-xs text-slate-500">Перетащите лида сюда</div>}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              <PipelineLeadDetail
+                lead={selectedLead}
+                userName={userName}
+                onClear={() => setSelectedLeadId("")}
+                onEdit={() => setModal("editLead")}
+                onDelete={() => setModal("deleteLead")}
+                onOpenCard={() => selectedLead && viewLead(selectedLead)}
+              >
+                {selectedLead ? renderPipelineActions(selectedLead) : null}
+              </PipelineLeadDetail>
             </div>
           </section>
+        )}
+
+        {activeView === "messengers" && (
+          <MessengerCenter
+            state={state}
+            currentUser={currentUser}
+            onOpenLead={(leadId) => {
+              setSelectedLeadId(leadId);
+              setActiveView("pipeline");
+            }}
+            onCreateLead={() => setModal("newLead")}
+          />
         )}
 
         {activeView === "lead" && selectedLead && (
@@ -789,8 +932,31 @@ export function CrmApp() {
         <ModalShell onClose={() => setModal(null)}>
           {modal === "newUser" && <NewUserForm currentUser={currentUser} onSubmit={(action) => { setModal(null); void runAction(action, "Аккаунт создан."); }} />}
           {modal === "newLead" && <NewLeadForm state={state} currentUser={currentUser} onSubmit={async (action) => { const ok = await runAction(action, "Лид создан и задача поставлена."); if (ok) setModal(null); }} />}
+          {modal === "editLead" && selectedLead && (
+            <EditLeadForm
+              lead={selectedLead}
+              state={state}
+              currentUser={currentUser}
+              onCancel={() => setModal(null)}
+              onSubmit={async (action) => {
+                const ok = await runAction(action, "Изменения лида сохранены.");
+                if (ok) setModal(null);
+              }}
+            />
+          )}
+          {modal === "deleteLead" && selectedLead && (
+            <DeleteLeadConfirm
+              lead={selectedLead}
+              submitting={loadingAction}
+              onCancel={() => setModal(null)}
+              onConfirm={async () => {
+                const ok = await runAction({ type: "delete_lead", payload: { leadId: selectedLead.id } }, `Лид «${selectedLead.companyName}» удален.`);
+                if (ok) setModal(null);
+              }}
+            />
+          )}
           {modal === "warmupStep" && <WarmupForm sequenceId={state.warmupSequences[0]?.id} onSubmit={(action) => { setModal(null); void runAction(action, "Шаг прогрева добавлен."); }} />}
-          {modal === "refusal" && selectedLead && <RefusalForm leadId={selectedLead.id} onSubmit={(action) => { setModal(null); void runAction(action, "Отказ сохранен с причиной."); }} />}
+          {modal === "refusal" && selectedLead && <RefusalForm leadId={selectedLead.id} onSubmit={async (action) => { const ok = await runAction(action, "Отказ сохранен с причиной."); if (ok) setModal(null); }} />}
           {modal === "integration" && (
             <IntegrationForm
               integration={state.integrations.find((item) => item.id === selectedIntegrationId)}
@@ -893,6 +1059,102 @@ function EmptyState({ title, text, action }: { title: string; text: string; acti
       {action && <div className="mt-4">{action}</div>}
       </div>
     </div>
+  );
+}
+
+function PipelineLeadDetail({
+  lead,
+  userName,
+  onClear,
+  onEdit,
+  onDelete,
+  onOpenCard,
+  children
+}: {
+  lead?: Lead;
+  userName: (id: string) => string;
+  onClear: () => void;
+  onEdit: () => void;
+  onDelete: () => void;
+  onOpenCard: () => void;
+  children: React.ReactNode;
+}) {
+  if (!lead) {
+    return (
+      <aside className="crm-lead-detail">
+        <EmptyState title="Лид не выбран" text="Выберите карточку в воронке. Подробная информация останется здесь до выбора другого лида." />
+      </aside>
+    );
+  }
+
+  const hasEmail = lead.email && lead.email !== "уточнить";
+  const hasSite = lead.site && lead.site !== "уточнить";
+  const siteHref = hasSite ? (lead.site.startsWith("http") ? lead.site : `https://${lead.site}`) : "";
+
+  return (
+    <aside className="crm-lead-detail" aria-label={`Выбранный лид ${lead.companyName}`}>
+      <div className="flex items-start justify-between gap-3 border-b border-[#E5E7EB] pb-4">
+        <div className="min-w-0">
+          <span className="crm-selected-indicator"><CheckCircle2 size={13} /> Выбран</span>
+          <h2 className="mt-2 truncate text-lg font-bold text-[#202939]">{lead.companyName}</h2>
+          <p className="mt-1 text-sm font-medium text-slate-600">{STAGES[lead.stage]}</p>
+        </div>
+        <button type="button" onClick={onClear} aria-label="Снять выбор лида" title="Снять выбор" className="ui-button ui-button-secondary ui-icon-button min-h-9 size-9">
+          <X size={16} />
+        </button>
+      </div>
+
+      <dl className="mt-4 grid gap-3 text-sm">
+        <div>
+          <dt className="text-xs font-semibold text-slate-500">Контакт</dt>
+          <dd className="mt-1 font-semibold text-[#202939]">{lead.contactName}{lead.contactRole ? ` · ${lead.contactRole}` : ""}</dd>
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <dt className="text-xs font-semibold text-slate-500">Телефон</dt>
+            <dd className="mt-1 break-words"><a className="font-semibold text-[#4357D9] hover:underline" href={phoneHref(lead.phone)}>{lead.phone}</a></dd>
+          </div>
+          <div>
+            <dt className="text-xs font-semibold text-slate-500">Email</dt>
+            <dd className="mt-1 break-words">{hasEmail ? <a className="font-semibold text-[#4357D9] hover:underline" href={`mailto:${lead.email}`}>{lead.email}</a> : "не указан"}</dd>
+          </div>
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <dt className="text-xs font-semibold text-slate-500">Ответственный</dt>
+            <dd className="mt-1 font-semibold text-[#202939]">{userName(lead.ownerId)}</dd>
+          </div>
+          <div>
+            <dt className="text-xs font-semibold text-slate-500">Источник</dt>
+            <dd className="mt-1 font-semibold text-[#202939]">{lead.sourceChannel}</dd>
+          </div>
+        </div>
+        {hasSite && (
+          <div>
+            <dt className="text-xs font-semibold text-slate-500">Сайт</dt>
+            <dd className="mt-1 break-words"><a href={siteHref} target="_blank" rel="noreferrer" className="font-semibold text-[#4357D9] hover:underline">{lead.site}</a></dd>
+          </div>
+        )}
+        <div>
+          <dt className="text-xs font-semibold text-slate-500">Комментарий и контекст</dt>
+          <dd className="mt-1 leading-5 text-slate-700">{lead.pain || "Комментарий не добавлен"}</dd>
+        </div>
+        <div>
+          <dt className="text-xs font-semibold text-slate-500">Следующий шаг</dt>
+          <dd className="mt-1 leading-5 text-slate-700">{lead.nextStep || "Не назначен"}</dd>
+        </div>
+      </dl>
+
+      <div className="mt-5 border-t border-[#E5E7EB] pt-4">
+        <p className="mb-2 text-xs font-semibold text-slate-500">Действия текущего этапа</p>
+        <div className="flex flex-wrap gap-2">{children}</div>
+      </div>
+      <div className="mt-3 grid grid-cols-2 gap-2">
+        <button type="button" onClick={onEdit} className="ui-button ui-button-secondary"><Pencil size={15} /> Редактировать</button>
+        <button type="button" onClick={onOpenCard} className="ui-button ui-button-secondary">Полная карточка</button>
+      </div>
+      <button type="button" onClick={onDelete} className="ui-button ui-button-danger mt-2 w-full"><Trash2 size={15} /> Удалить лида</button>
+    </aside>
   );
 }
 
@@ -1090,6 +1352,9 @@ function IntegrationForm({ integration, onSubmit }: { integration?: CrmState["in
   }
 
   const currentIntegration = integration;
+  if (currentIntegration.id === "telegram" || currentIntegration.id === "whatsapp" || currentIntegration.id === "max") {
+    return <MessengerIntegrationForm channel={currentIntegration.id} />;
+  }
   const fields = integrationFieldMap[currentIntegration.id] ?? [
     { name: "apiKey", label: "API Key" },
     { name: "webhookUrl", label: "Webhook URL" }
@@ -1123,10 +1388,231 @@ function IntegrationForm({ integration, onSubmit }: { integration?: CrmState["in
   );
 }
 
+function MessengerIntegrationForm({ channel }: { channel: "telegram" | "whatsapp" | "max" }) {
+  const [connection, setConnection] = useState<MessengerConnection | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [checking, setChecking] = useState(false);
+  const [message, setMessage] = useState("");
+
+  const loadConnection = useCallback(async () => {
+    setLoading(true);
+    try {
+      const response = await fetch("/api/messaging/connections", { cache: "no-store" });
+      const data = await response.json() as { connections?: MessengerConnection[]; error?: string };
+      if (!response.ok) throw new Error(data.error || "Не удалось прочитать настройки.");
+      setConnection(data.connections?.find((item) => item.channel === channel) ?? null);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Не удалось прочитать настройки.");
+    } finally {
+      setLoading(false);
+    }
+  }, [channel]);
+
+  useEffect(() => {
+    // Connection status is read from the protected server endpoint.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void loadConnection();
+  }, [loadConnection]);
+
+  async function check() {
+    setChecking(true);
+    setMessage("");
+    try {
+      const response = await fetch(`/api/messaging/connections/${channel}/check`, { method: "POST" });
+      const data = await response.json() as { connection?: MessengerConnection; message?: string; error?: string };
+      if (data.connection) setConnection(data.connection);
+      setMessage(data.message || data.error || (response.ok ? "Подключение работает." : "Проверка не пройдена."));
+    } catch {
+      setMessage("Сервер недоступен. Проверка не выполнена.");
+    } finally {
+      setChecking(false);
+    }
+  }
+
+  const statusLabel = connection?.status === "connected" ? "Подключён" : connection?.status === "error" ? "Ошибка" : connection?.status === "needs_setup" ? "Требует проверки" : "Не настроен";
+  const webhookUrl = typeof window === "undefined" ? `/api/messaging/webhooks/${channel}` : `${window.location.origin}/api/messaging/webhooks/${channel}`;
+
+  return (
+    <div className="grid gap-4">
+      <div>
+        <h2 className="pr-12 text-xl font-bold text-[#202939]">{connection?.name ?? channel}</h2>
+        <p className="mt-1 text-sm text-slate-600">Секреты задаются только в окружении сервера и никогда не возвращаются в браузер.</p>
+      </div>
+      {loading ? <p className="text-sm text-slate-500">Проверяем конфигурацию...</p> : (
+        <>
+          <div className="grid grid-cols-2 gap-3 max-sm:grid-cols-1">
+            <div className="rounded-lg border border-[#E5E7EB] p-3"><span className="text-xs text-slate-500">Состояние</span><strong className="mt-1 block">{statusLabel}</strong></div>
+            <div className="rounded-lg border border-[#E5E7EB] p-3"><span className="text-xs text-slate-500">Webhook-защита</span><strong className="mt-1 block">{connection?.webhookConfigured ? "Настроена" : "Не настроена"}</strong></div>
+          </div>
+          <div>
+            <strong className="text-sm">Переменные окружения</strong>
+            <div className="mt-2 flex flex-wrap gap-2">{connection?.requiredEnv.map((name) => <code key={name} className="rounded-md bg-slate-100 px-2 py-1 text-xs text-slate-700">{name}</code>)}</div>
+          </div>
+          <label className="ui-label">Webhook URL<input readOnly value={webhookUrl} className="ui-field bg-slate-50" /></label>
+          {connection?.lastSyncAt && <p className="text-xs text-slate-500">Последняя успешная проверка: {new Date(connection.lastSyncAt).toLocaleString("ru-RU")}</p>}
+          {connection?.lastError && <div className="rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">{connection.lastError}</div>}
+        </>
+      )}
+      {message && <div className="rounded-lg border border-[#DCE2EA] bg-slate-50 p-3 text-sm text-slate-700">{message}</div>}
+      <div className="flex flex-wrap gap-2">
+        <button type="button" disabled={checking || !connection?.configured} onClick={() => void check()} className="ui-button ui-button-primary">{checking ? "Проверяем..." : "Проверить подключение"}</button>
+        <a href="/messengers-setup" target="_blank" rel="noreferrer" className="ui-button ui-button-secondary">Инструкция</a>
+      </div>
+      {!connection?.configured && <p className="text-xs leading-5 text-slate-500">Добавьте переменные в `.env.local` или Vercel и перезапустите приложение. До этого CRM не будет имитировать успешную отправку.</p>}
+    </div>
+  );
+}
+
+function EditLeadForm({ lead, state, currentUser, onSubmit, onCancel }: {
+  lead: Lead;
+  state: CrmState;
+  currentUser: CrmUser;
+  onSubmit: (action: CrmAction) => void;
+  onCancel: () => void;
+}) {
+  const canReassign = currentUser.role === "Руководитель" || currentUser.role === "РОП";
+  const activeOwners = state.users.filter((user) => user.status === "active");
+  const ownerOptions = canReassign ? activeOwners : activeOwners.filter((user) => user.id === currentUser.id);
+  const channels = Array.from(new Set([lead.sourceChannel, "Cold Call", "Instagram", "Avito", "Telegram ads", "Яндекс директ", "Сайт"]));
+
+  function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const data = Object.fromEntries(new FormData(event.currentTarget).entries()) as Record<string, string>;
+    onSubmit({
+      type: "update_lead",
+      payload: {
+        leadId: lead.id,
+        changes: {
+          companyName: data.companyName.trim(),
+          site: data.site.trim() || "уточнить",
+          industry: data.industry.trim() || "уточнить",
+          companySize: data.companySize.trim() || "уточнить",
+          region: data.region.trim() || "уточнить",
+          contactName: data.contactName.trim(),
+          contactRole: data.contactRole.trim() || "ЛПР",
+          phone: data.phone.trim(),
+          email: data.email.trim() || "уточнить",
+          telegram: data.telegram.trim() || "уточнить",
+          whatsapp: data.whatsapp.trim() || data.phone.trim(),
+          max: data.max.trim() || "уточнить",
+          hasSeo: data.hasSeo === "unknown" ? null : data.hasSeo === "yes",
+          hasContext: data.hasContext === "unknown" ? null : data.hasContext === "yes",
+          hasMarketer: data.hasMarketer === "unknown" ? null : data.hasMarketer === "yes",
+          hasAgency: data.hasAgency === "unknown" ? null : data.hasAgency === "yes",
+          brandedQueries: data.brandedQueries === "" ? null : Number(data.brandedQueries),
+          llmVisibility: data.llmVisibility === "" ? null : Number(data.llmVisibility),
+          geoPotential: data.geoPotential as Lead["geoPotential"],
+          stage: Number(data.stage),
+          sourceChannel: data.sourceChannel,
+          sourceDetail: data.sourceDetail.trim() || "ручное создание",
+          ownerId: data.ownerId || lead.ownerId,
+          pain: data.pain.trim(),
+          currentPromotionChannels: data.currentPromotionChannels.trim(),
+          budget: data.budget.trim(),
+          nextStep: data.nextStep.trim(),
+          tariffId: data.tariffId || undefined,
+          refusalReason: data.refusalReason.trim() || undefined
+        }
+      }
+    });
+  }
+
+  return (
+    <form onSubmit={submit} className="grid grid-cols-2 gap-3 max-md:grid-cols-1">
+      <div className="col-span-full pr-12">
+        <h2 className="text-xl font-bold text-[#202939]">Редактировать лида</h2>
+        <p className="mt-1 text-sm text-slate-600">Изменения сохраняются в общем хранилище CRM.</p>
+      </div>
+      <FormInput name="companyName" label="Компания" defaultValue={lead.companyName} required />
+      <FormInput name="site" label="Сайт" defaultValue={lead.site} />
+      <FormInput name="industry" label="Отрасль" defaultValue={lead.industry} />
+      <FormInput name="companySize" label="Размер компании" defaultValue={lead.companySize} />
+      <FormInput name="region" label="Регион" defaultValue={lead.region} />
+      <FormInput name="contactName" label="Контактное лицо" defaultValue={lead.contactName} required />
+      <FormInput name="contactRole" label="Должность" defaultValue={lead.contactRole} />
+      <FormInput name="phone" label="Телефон" defaultValue={lead.phone} required />
+      <FormInput name="email" label="Email" defaultValue={lead.email} />
+      <FormInput name="telegram" label="Telegram" defaultValue={lead.telegram} />
+      <FormInput name="whatsapp" label="WhatsApp" defaultValue={lead.whatsapp} />
+      <FormInput name="max" label="MAX" defaultValue={lead.max} />
+      <SelectBool name="hasSeo" label="Есть SEO" defaultValue={lead.hasSeo} />
+      <SelectBool name="hasContext" label="Есть контекст" defaultValue={lead.hasContext} />
+      <SelectBool name="hasMarketer" label="Есть маркетолог" defaultValue={lead.hasMarketer} />
+      <SelectBool name="hasAgency" label="Есть агентство" defaultValue={lead.hasAgency} />
+      <FormInput name="brandedQueries" label="Брендовые запросы" type="number" defaultValue={lead.brandedQueries?.toString() ?? ""} />
+      <FormInput name="llmVisibility" label="Видимость в LLM, %" type="number" defaultValue={lead.llmVisibility?.toString() ?? ""} />
+      <label className="ui-label">
+        GEO-потенциал
+        <select name="geoPotential" defaultValue={lead.geoPotential} className="ui-field">
+          {["Новый", "Высокий", "Средний", "Низкий"].map((item) => <option key={item}>{item}</option>)}
+        </select>
+      </label>
+      <label className="ui-label">
+        Этап воронки
+        <select name="stage" defaultValue={lead.stage} className="ui-field">
+          {STAGES.map((stage, index) => <option key={stage} value={index}>{stage}</option>)}
+        </select>
+      </label>
+      <label className="ui-label">
+        Источник
+        <select name="sourceChannel" defaultValue={lead.sourceChannel} className="ui-field">
+          {channels.map((channel) => <option key={channel}>{channel}</option>)}
+        </select>
+      </label>
+      <FormInput name="sourceDetail" label="Детали источника" defaultValue={lead.sourceDetail} />
+      <label className="ui-label">
+        Ответственный
+        <select name="ownerId" defaultValue={lead.ownerId} className="ui-field" disabled={!canReassign}>
+          {ownerOptions.map((user) => <option key={user.id} value={user.id}>{user.fullName} · {user.role}</option>)}
+        </select>
+      </label>
+      <label className="ui-label">
+        Тариф
+        <select name="tariffId" defaultValue={lead.tariffId ?? ""} className="ui-field">
+          <option value="">Не выбран</option>
+          {state.tariffs.map((tariff) => <option key={tariff.id} value={tariff.id}>{tariff.name} · {money(tariff.price)}</option>)}
+        </select>
+      </label>
+      <FormTextarea name="pain" label="Комментарий / боль клиента" defaultValue={lead.pain} />
+      <FormTextarea name="currentPromotionChannels" label="Текущие каналы продвижения" defaultValue={lead.currentPromotionChannels} />
+      <FormInput name="budget" label="Бюджет" defaultValue={lead.budget} />
+      <FormTextarea name="nextStep" label="Следующий шаг" defaultValue={lead.nextStep} />
+      <FormInput name="refusalReason" label="Причина отказа" defaultValue={lead.refusalReason ?? ""} />
+      <div className="col-span-full flex justify-end gap-2 max-md:flex-col-reverse">
+        <button type="button" onClick={onCancel} className="ui-button ui-button-secondary">Отмена</button>
+        <button className="ui-button ui-button-primary">Сохранить</button>
+      </div>
+    </form>
+  );
+}
+
+function DeleteLeadConfirm({ lead, submitting, onConfirm, onCancel }: {
+  lead: Lead;
+  submitting: boolean;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div className="grid gap-4">
+      <div className="pr-12">
+        <h2 className="text-xl font-bold text-[#202939]">Удалить лида?</h2>
+        <p className="mt-2 text-sm leading-6 text-slate-600">Лид «{lead.companyName}» и связанные задачи, звонки, платежи и история будут удалены из хранилища CRM.</p>
+      </div>
+      <div className="rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm font-semibold text-rose-800">Это действие нельзя отменить.</div>
+      <div className="flex justify-end gap-2 max-sm:flex-col-reverse">
+        <button type="button" onClick={onCancel} disabled={submitting} className="ui-button ui-button-secondary">Отмена</button>
+        <button type="button" onClick={onConfirm} disabled={submitting} className="ui-button ui-button-danger"><Trash2 size={15} /> {submitting ? "Удаляем..." : "Удалить лида"}</button>
+      </div>
+    </div>
+  );
+}
+
 function NewLeadForm({ state, currentUser, onSubmit }: { state: CrmState; currentUser: CrmUser; onSubmit: (action: CrmAction) => void }) {
   const activeOwners = state.users.filter((user) => user.status === "active");
   const salesOwners = activeOwners.filter((user) => user.role === "Менеджер" || user.role === "Аккаунт-менеджер" || user.role === "РОП");
-  const ownerOptions = salesOwners.length > 0 ? salesOwners : activeOwners.filter((user) => user.role === "Руководитель");
+  const canReassign = currentUser.role === "Руководитель" || currentUser.role === "РОП";
+  const availableOwners = salesOwners.length > 0 ? salesOwners : activeOwners.filter((user) => user.role === "Руководитель");
+  const ownerOptions = canReassign ? availableOwners : activeOwners.filter((user) => user.id === currentUser.id);
   const fallbackOwnerId = ownerOptions[0]?.id ?? currentUser.id;
 
   function submit(event: FormEvent<HTMLFormElement>) {
@@ -1147,10 +1633,10 @@ function NewLeadForm({ state, currentUser, onSubmit }: { state: CrmState; curren
         telegram: data.telegram || "уточнить",
         whatsapp: data.whatsapp || data.phone,
         max: data.max || "уточнить",
-        hasSeo: data.hasSeo === "yes",
-        hasContext: data.hasContext === "yes",
-        hasMarketer: data.hasMarketer === "yes",
-        hasAgency: data.hasAgency === "yes",
+        hasSeo: data.hasSeo === "unknown" ? null : data.hasSeo === "yes",
+        hasContext: data.hasContext === "unknown" ? null : data.hasContext === "yes",
+        hasMarketer: data.hasMarketer === "unknown" ? null : data.hasMarketer === "yes",
+        hasAgency: data.hasAgency === "unknown" ? null : data.hasAgency === "yes",
         brandedQueries: Number(data.brandedQueries || 0),
         llmVisibility: Number(data.llmVisibility || 0),
         geoPotential: "Новый",
@@ -1268,11 +1754,21 @@ function FormInput({ name, label, type = "text", required = false, defaultValue 
   );
 }
 
-function SelectBool({ name, label }: { name: string; label: string }) {
+function FormTextarea({ name, label, defaultValue = "" }: { name: string; label: string; defaultValue?: string }) {
   return (
     <label className="ui-label">
       {label}
-      <select name={name} className="ui-field">
+      <textarea name={name} defaultValue={defaultValue} rows={3} className="ui-field min-h-24 resize-y" />
+    </label>
+  );
+}
+
+function SelectBool({ name, label, defaultValue = null }: { name: string; label: string; defaultValue?: boolean | null }) {
+  return (
+    <label className="ui-label">
+      {label}
+      <select name={name} defaultValue={defaultValue === null ? "unknown" : defaultValue ? "yes" : "no"} className="ui-field">
+        <option value="unknown">Уточнить</option>
         <option value="yes">Да</option>
         <option value="no">Нет</option>
       </select>

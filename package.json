@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "serve": "node server.mjs",
-    "lint": "next lint",
+    "lint": "eslint .",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
