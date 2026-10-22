@@ -68,6 +68,17 @@ create index if not exists messenger_conversations_owner_idx on public.messenger
 create index if not exists messenger_conversations_lead_idx on public.messenger_conversations(lead_id);
 create index if not exists messenger_messages_history_idx on public.messenger_messages(conversation_id, sent_at desc);
 
+create or replace function public.set_updated_at()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$;
+
 drop trigger if exists messenger_connections_updated_at on public.messenger_connections;
 create trigger messenger_connections_updated_at before update on public.messenger_connections
 for each row execute function public.set_updated_at();
