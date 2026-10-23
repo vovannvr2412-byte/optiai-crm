@@ -1303,7 +1303,7 @@ function NewUserForm({ currentUser, onSubmit }: { currentUser: CrmUser; onSubmit
       <h2 className="pr-12 text-xl font-bold text-[#202939]">Добавить сотрудника</h2>
       <FormInput name="fullName" label="Имя и фамилия" required />
       <FormInput name="email" label="Email" type="email" required />
-      <FormInput name="password" label="Временный пароль" type="password" required />
+      <FormInput name="password" label="Временный пароль" type="password" required minLength={8} />
       <label className="ui-label">
         Роль
         <select name="role" className="ui-field">
@@ -1887,11 +1887,11 @@ function RefusalForm({ leadId, onSubmit }: { leadId: string; onSubmit: (action: 
   );
 }
 
-function FormInput({ name, label, type = "text", required = false, defaultValue = "", placeholder }: { name: string; label: string; type?: string; required?: boolean; defaultValue?: string; placeholder?: string }) {
+function FormInput({ name, label, type = "text", required = false, defaultValue = "", placeholder, minLength }: { name: string; label: string; type?: string; required?: boolean; defaultValue?: string; placeholder?: string; minLength?: number }) {
   return (
     <label className="ui-label">
       {label}
-      <input name={name} type={type} required={required} defaultValue={defaultValue} placeholder={placeholder} className="ui-field" />
+      <input name={name} type={type} required={required} defaultValue={defaultValue} placeholder={placeholder} minLength={minLength} className="ui-field" />
     </label>
   );
 }

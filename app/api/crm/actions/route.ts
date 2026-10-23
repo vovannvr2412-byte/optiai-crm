@@ -1,8 +1,10 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getSessionUserId } from "@/lib/auth/session";
+import { banSupabaseAuthUser, deleteSupabaseAuthUser, getAuthUserIdForCrmUser, provisionSupabaseAuthUser } from "@/lib/auth/supabase-users";
 import { applyCrmActionAsync, dashboardMetrics, getCrmStateAsync, scopedStateForAsync } from "@/lib/crm/store";
 import type { CrmAction, CrmUser } from "@/lib/crm/types";
+import { supabaseAuthEnabled } from "@/lib/supabase/auth";
 
 const actionSchema = z.object({
   type: z.string(),
@@ -15,6 +17,13 @@ const updateLeadPayloadSchema = z.object({
 });
 
 const deleteLeadPayloadSchema = z.object({ leadId: z.string().min(1) });
+const createUserPayloadSchema = z.object({
+  fullName: z.string().trim().min(2).max(120),
+  email: z.string().email(),
+  role: z.enum(["Руководитель", "РОП", "Менеджер", "Аккаунт-менеджер"]),
+  position: z.string().trim().min(2).max(120),
+  password: z.string().min(8).max(128)
+});
 const createWarmupStepPayloadSchema = z.object({
   sequenceId: z.string().min(1),
   day: z.number().int().min(0).max(3650),
@@ -44,6 +53,9 @@ export async function POST(request: Request) {
   }
 
   const action = parsed.data as CrmAction;
+  if (action.type === "create_user" && !createUserPayloadSchema.safeParse(action.payload).success) {
+    return NextResponse.json({ error: "Укажите корректные данные и пароль не короче 8 символов" }, { status: 400 });
+  }
   if (action.type === "update_lead" && !updateLeadPayloadSchema.safeParse(action.payload).success) {
     return NextResponse.json({ error: "Проверьте поля формы редактирования лида" }, { status: 400 });
   }
@@ -62,7 +74,25 @@ export async function POST(request: Request) {
 
   let state;
   try {
+    const deletedAuthUserId = action.type === "delete_user" && supabaseAuthEnabled()
+      ? await getAuthUserIdForCrmUser(action.payload.userId)
+      : null;
     await applyCrmActionAsync(action);
+    if (supabaseAuthEnabled()) {
+      if (action.type === "create_user") {
+        const savedState = await getCrmStateAsync();
+        const createdUser = savedState.users.find((user) => user.email.toLowerCase() === action.payload.email.trim().toLowerCase());
+        if (!createdUser) throw new Error("Созданный сотрудник не найден в CRM.");
+        try {
+          await provisionSupabaseAuthUser(createdUser, action.payload.password);
+        } catch (error) {
+          await applyCrmActionAsync({ type: "delete_user", payload: { userId: createdUser.id } });
+          throw error;
+        }
+      }
+      if (action.type === "disable_user") await banSupabaseAuthUser(action.payload.userId);
+      if (action.type === "delete_user") await deleteSupabaseAuthUser(deletedAuthUserId);
+    }
     state = await scopedStateForAsync(currentUser.id);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

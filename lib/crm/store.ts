@@ -1,7 +1,9 @@
 import { createSeedState } from "./seed";
 import { disableCredential, getCredentialsSnapshot, hydrateCredentialsSnapshot, registerCredential } from "@/lib/auth/credentials";
 import { createServiceSupabaseClient } from "@/lib/supabase/server";
+import { ensureNormalizedCrmState, writeNormalizedCrmState } from "./normalized-store";
 import { STAGES, type CrmAction, type CrmState, type Lead, type LeadTemperature, type LeadUpdate, type Role } from "./types";
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
@@ -11,11 +13,10 @@ const stateFile = path.join(dataDir, "crm-state.json");
 const tempStateFile = path.join(dataDir, "crm-state.tmp.json");
 const retiredSeedUserIds = new Set(["u-anna", "u-sofia", "u-ilya"]);
 const retiredSeedUserEmails = ["anna@optiai.ru", "sofia@optiai.ru", "ilya@optiai.ru"];
-const crmStateKey = "crm_state";
 const credentialsKey = "credentials";
 let suppressLocalPersistence = false;
 
-function supabasePersistenceEnabled() {
+export function supabasePersistenceEnabled() {
   if (process.env.CRM_FORCE_LOCAL === "true") return false;
   return Boolean(process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY);
 }
@@ -101,8 +102,8 @@ function isCrmState(value: unknown): value is CrmState {
   );
 }
 
-function id(prefix: string) {
-  return `${prefix}-${Math.random().toString(36).slice(2, 8)}-${Date.now().toString(36)}`;
+function id() {
+  return randomUUID();
 }
 
 function today() {
@@ -125,17 +126,15 @@ export function getCrmState(): CrmState {
 export async function getCrmStateAsync(): Promise<CrmState> {
   if (!supabasePersistenceEnabled()) return getCrmState();
 
-  const [storedState, storedCredentials] = await Promise.all([
-    readSupabaseValue<CrmState>(crmStateKey),
-    readSupabaseValue<ReturnType<typeof getCredentialsSnapshot>>(credentialsKey)
-  ]);
+  const storedCredentials = await readSupabaseValue<ReturnType<typeof getCredentialsSnapshot>>(credentialsKey);
 
   if (storedCredentials) hydrateCredentialsSnapshot(storedCredentials);
 
-  const validStoredState = isCrmState(storedState) ? storedState : null;
-  const migrated = migrateState(validStoredState ?? createSeedState());
+  const storedState = await ensureNormalizedCrmState(createSeedState());
+  if (!isCrmState(storedState)) throw new Error("Supabase вернул некорректное состояние CRM.");
+  const migrated = migrateState(storedState);
   globalForCrm.optiCrmState = migrated.state;
-  if (!storedState || migrated.changed) {
+  if (migrated.changed) {
     await persistCrmStateAsync(globalForCrm.optiCrmState);
   }
   return globalForCrm.optiCrmState;
@@ -144,9 +143,10 @@ export async function getCrmStateAsync(): Promise<CrmState> {
 async function persistCrmStateAsync(state: CrmState) {
   if (!supabasePersistenceEnabled()) {
     persistState(state);
+    return;
   }
   await Promise.all([
-    writeSupabaseValue(crmStateKey, state),
+    writeNormalizedCrmState(state),
     writeSupabaseValue(credentialsKey, getCredentialsSnapshot())
   ]);
 }
@@ -220,11 +220,11 @@ function filterStateByLeads(state: CrmState, leadIds: Set<string>, role: Role): 
 }
 
 function addActivity(state: CrmState, leadId: string, type: CrmState["activities"][number]["type"], title: string, detail: string) {
-  state.activities.unshift({ id: id("act"), leadId, type, title, detail, createdAt: today() });
+  state.activities.unshift({ id: id(), leadId, type, title, detail, createdAt: today() });
 }
 
 function addTask(state: CrmState, leadId: string, ownerId: string, title: string, daysFromNow: number, priority: "high" | "medium" | "low", automationKey?: string) {
-  state.tasks.unshift({ id: id("task"), leadId, ownerId, title, dueAt: dateOnly(daysFromNow), priority, status: "open", automationKey });
+  state.tasks.unshift({ id: id(), leadId, ownerId, title, dueAt: dateOnly(daysFromNow), priority, status: "open", automationKey });
 }
 
 function scheduleNoAnswerFollowUps(state: CrmState, lead: Lead, ownerId: string) {
@@ -262,10 +262,14 @@ export function applyCrmAction(action: CrmAction): CrmState {
   const state = suppressLocalPersistence && globalForCrm.optiCrmState ? globalForCrm.optiCrmState : getCrmState();
 
   if (action.type === "create_user") {
+    const normalizedEmail = action.payload.email.trim().toLowerCase();
+    if (state.users.some((user) => user.email.toLowerCase() === normalizedEmail)) {
+      throw new Error("Сотрудник с таким email уже существует.");
+    }
     const newUser = {
-      id: id("user"),
-      fullName: action.payload.fullName,
-      email: action.payload.email,
+      id: id(),
+      fullName: action.payload.fullName.trim(),
+      email: normalizedEmail,
       role: action.payload.role,
       position: action.payload.position,
       status: "active" as const,
@@ -276,7 +280,7 @@ export function applyCrmAction(action: CrmAction): CrmState {
       createdAt: today()
     };
     state.users.unshift(newUser);
-    registerCredential(newUser.id, newUser.email, action.payload.password);
+    if (!supabasePersistenceEnabled()) registerCredential(newUser.id, newUser.email, action.payload.password);
   }
 
   if (action.type === "disable_user") {
@@ -284,7 +288,7 @@ export function applyCrmAction(action: CrmAction): CrmState {
     const fallback = state.users.find((item) => item.role === "Менеджер" && item.status === "active" && item.id !== user?.id);
     if (user && user.role !== "Руководитель") {
       user.status = "disabled";
-      disableCredential(user.email);
+      if (!supabasePersistenceEnabled()) disableCredential(user.email);
       if (fallback) {
         state.leads.filter((lead) => lead.ownerId === user.id).forEach((lead) => {
           lead.ownerId = fallback.id;
@@ -306,7 +310,7 @@ export function applyCrmAction(action: CrmAction): CrmState {
       state.tasks = state.tasks.filter((task) => task.ownerId !== user.id);
       state.callRecords = state.callRecords.filter((call) => call.ownerId !== user.id);
       state.users = state.users.filter((item) => item.id !== user.id);
-      disableCredential(user.email);
+      if (!supabasePersistenceEnabled()) disableCredential(user.email);
     }
   }
 
@@ -319,7 +323,7 @@ export function applyCrmAction(action: CrmAction): CrmState {
     const lead: Lead = {
       ...action.payload,
       ownerId: fallbackOwner.id,
-      id: id("lead"),
+      id: id(),
       stage: 0,
       status: "sales",
       score: 0,
@@ -421,7 +425,7 @@ export function applyCrmAction(action: CrmAction): CrmState {
       lead.temperature = temperature(lead.score);
       lead.nextStep = "Отправить SEO + GEO аудит и релевантный кейс";
       const call = {
-        id: id("call"),
+        id: id(),
         leadId: lead.id,
         ownerId: owner.id,
         recordingUrl: "/recordings/demo-call.mp3",
@@ -480,7 +484,7 @@ export function applyCrmAction(action: CrmAction): CrmState {
     const sequence = state.warmupSequences.find((item) => item.id === action.payload.sequenceId);
     if (sequence) {
       sequence.steps.push({
-        id: id("warm"),
+        id: id(),
         day: Math.max(0, Math.floor(action.payload.day)),
         title: action.payload.title,
         message: action.payload.message,
@@ -508,8 +512,8 @@ export function applyCrmAction(action: CrmAction): CrmState {
       lead.stage = 9;
       lead.status = "client";
       lead.tariffId = tariff.id;
-      state.payments.unshift({ id: id("pay"), leadId: lead.id, amount: tariff.price, paidAt: dateOnly(), provider: "RoboKassa", status: "paid" });
-      state.subscriptions.unshift({ id: id("sub"), leadId: lead.id, tariffId: tariff.id, startedAt: dateOnly(), endsAt: dateOnly(90), nextPaymentAt: dateOnly(30), contractMonths: 3, status: "active" });
+      state.payments.unshift({ id: id(), leadId: lead.id, amount: tariff.price, paidAt: dateOnly(), provider: "RoboKassa", status: "paid" });
+      state.subscriptions.unshift({ id: id(), leadId: lead.id, tariffId: tariff.id, startedAt: dateOnly(), endsAt: dateOnly(90), nextPaymentAt: dateOnly(30), contractMonths: 3, status: "active" });
       addActivity(state, lead.id, "payment", "Оплата получена", `${tariff.name}: ${tariff.price} ₽`);
     }
   }

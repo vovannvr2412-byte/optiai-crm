@@ -1,5 +1,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { cookies } from "next/headers";
+import { createServerAuthClient, supabaseAuthEnabled } from "@/lib/supabase/auth";
+import { createServiceSupabaseClient } from "@/lib/supabase/server";
 
 export const SESSION_COOKIE = "optiai_crm_session";
 const SESSION_MAX_AGE_SECONDS = 60 * 60 * 12;
@@ -51,11 +53,27 @@ export async function setSession(userId: string) {
 }
 
 export async function clearSession() {
+  if (supabaseAuthEnabled()) {
+    const supabase = await createServerAuthClient();
+    await supabase.auth.signOut({ scope: "local" });
+  }
   const cookieStore = await cookies();
   cookieStore.delete(SESSION_COOKIE);
 }
 
 export async function getSessionUserId() {
+  if (supabaseAuthEnabled()) {
+    const auth = await createServerAuthClient();
+    const { data, error } = await auth.auth.getUser();
+    if (error || !data.user) return null;
+    const { data: crmUser, error: crmError } = await createServiceSupabaseClient()
+      .from("crm_users")
+      .select("id,status")
+      .eq("auth_user_id", data.user.id)
+      .maybeSingle();
+    if (crmError || !crmUser || crmUser.status !== "active") return null;
+    return String(crmUser.id);
+  }
   const cookieStore = await cookies();
   return parseToken(cookieStore.get(SESSION_COOKIE)?.value);
 }

@@ -27,7 +27,7 @@ npm run dev
 
 Для production нужно задать `AUTH_SECRET` в `.env.local`. При HTTPS также выставить `AUTH_COOKIE_SECURE=true`.
 
-При подключении Supabase эти аккаунты следует перенести в Supabase Auth, а поле `crm_users.auth_user_id` связать с `auth.users.id`. Подробно: `supabase/AUTH_SETUP.md`.
+В production используется Supabase Auth. Существующие аккаунты автоматически переносятся при первом успешном входе, а новые сотрудники сразу создаются в CRM и Auth. Подробно: `supabase/AUTH_SETUP.md`.
 
 ## Supabase
 
@@ -47,8 +47,11 @@ SUPABASE_SERVICE_ROLE_KEY=
 supabase/migrations/0001_initial_schema.sql
 supabase/migrations/0002_messaging_center.sql
 supabase/migrations/0003_media_storage.sql
+supabase/migrations/0004_normalized_crm_and_auth.sql
 supabase/seed.sql
 ```
+
+`0004_normalized_crm_and_auth.sql` переключает CRM с общей JSON-записи на нормализованные таблицы. При первом входе приложение сохраняет резервную копию `crm_state_backup_v1`, переносит связанные сущности, обновляет идентификаторы диалогов и создаёт маркер `normalized_storage_v1`.
 
 Схема содержит:
 

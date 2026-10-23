@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
 import { createServiceSupabaseClient } from "@/lib/supabase/server";
-import { getCrmStateAsync } from "@/lib/crm/store";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -24,31 +23,23 @@ export async function GET() {
 
   try {
     const supabase = createServiceSupabaseClient();
-    const read = await supabase.from("crm_app_state").select("key").limit(5);
+    const read = await supabase.from("crm_app_state").select("key").limit(10);
     result.supabaseRead = read.error ? { ok: false, message: read.error.message, code: read.error.code } : { ok: true, rows: read.data?.length ?? 0 };
-
-    const write = await supabase.from("crm_app_state").upsert({
-      key: "diagnostics",
-      value: { checkedAt: new Date().toISOString() },
-      updated_at: new Date().toISOString()
-    }, { onConflict: "key" });
-    result.supabaseWrite = write.error ? { ok: false, message: write.error.message, code: write.error.code } : { ok: true };
+    const [marker, users, leads] = await Promise.all([
+      supabase.from("crm_app_state").select("updated_at").eq("key", "normalized_storage_v1").maybeSingle(),
+      supabase.from("crm_users").select("id", { count: "exact", head: true }),
+      supabase.from("leads").select("id", { count: "exact", head: true })
+    ]);
+    result.normalizedStorage = marker.error
+      ? { ok: false, message: marker.error.message }
+      : { ok: Boolean(marker.data), migratedAt: marker.data?.updated_at ?? null };
+    result.normalizedTables = {
+      users: users.error ? null : users.count,
+      leads: leads.error ? null : leads.count
+    };
   } catch (error) {
     result.supabaseClient = { ok: false, message: errorText(error) };
   }
 
-  try {
-    const state = await getCrmStateAsync();
-    result.crmState = {
-      ok: true,
-      users: state.users.length,
-      leads: state.leads.length,
-      ownerExists: state.users.some((user) => user.email === "owner@optiai.ru" && user.status === "active"),
-      ropExists: state.users.some((user) => user.email === "rop@optiai.ru" && user.status === "active")
-    };
-  } catch (error) {
-    result.crmState = { ok: false, message: errorText(error) };
-  }
-
-  return NextResponse.json(result);
+  return NextResponse.json(result, { headers: { "Cache-Control": "private, no-store" } });
 }
