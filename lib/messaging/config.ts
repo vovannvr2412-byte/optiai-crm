@@ -28,10 +28,10 @@ export function isMessengerChannel(value: string): value is MessengerChannel {
   return messengerChannels.includes(value as MessengerChannel);
 }
 
-export function connectionFromEnvironment(channel: MessengerChannel, saved?: Partial<MessengerConnection>): MessengerConnection {
+export function connectionFromConfiguration(channel: MessengerChannel, saved?: Partial<MessengerConnection>, configuredFields: Record<string, boolean> = {}) {
   const definition = channelConfig[channel];
-  const configured = definition.required.every((key) => Boolean(process.env[key]?.trim()));
-  const webhookConfigured = definition.webhook.every((key) => Boolean(process.env[key]?.trim()));
+  const configured = definition.required.every((key) => Boolean(configuredFields[key]));
+  const webhookConfigured = definition.webhook.every((key) => Boolean(configuredFields[key]));
   let status: MessengerConnection["status"] = configured ? "needs_setup" : "not_configured";
   if (configured && saved?.status === "connected") status = "connected";
   if (configured && saved?.status === "error") status = "error";
@@ -43,6 +43,7 @@ export function connectionFromEnvironment(channel: MessengerChannel, saved?: Par
     status,
     configured,
     webhookConfigured,
+    configuredFields,
     requiredEnv: [...definition.required, ...definition.webhook],
     externalAccountId: saved?.externalAccountId,
     lastSyncAt: saved?.lastSyncAt,

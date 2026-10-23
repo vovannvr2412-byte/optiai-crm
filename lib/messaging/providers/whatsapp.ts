@@ -1,20 +1,9 @@
 import type { MessageAttachment, MessageDeliveryStatus, NormalizedIncomingMessage, ProviderAdapter } from "../types";
+import { getMessengerSecrets } from "../secrets";
 import { asArray, asRecord, asString, providerJson, unixSecondsToIso } from "./shared";
 
-function accessToken() {
-  return process.env.WHATSAPP_ACCESS_TOKEN?.trim() ?? "";
-}
-
-function phoneNumberId() {
-  return process.env.WHATSAPP_PHONE_NUMBER_ID?.trim() ?? "";
-}
-
-function graphVersion() {
-  return process.env.WHATSAPP_GRAPH_VERSION?.trim() || "v24.0";
-}
-
-function graphUrl(path: string) {
-  return `https://graph.facebook.com/${graphVersion()}/${path}`;
+function graphUrl(version: string, path: string) {
+  return `https://graph.facebook.com/${version}/${path}`;
 }
 
 function messageText(message: Record<string, unknown>) {
@@ -69,27 +58,81 @@ export function normalizeWhatsAppStatuses(payload: unknown): WhatsAppStatusUpdat
 
 export const whatsappAdapter: ProviderAdapter = {
   channel: "whatsapp",
-  isConfigured: () => Boolean(accessToken() && phoneNumberId()),
+  isConfigured: async () => {
+    const secrets = await getMessengerSecrets("whatsapp");
+    return Boolean(secrets.WHATSAPP_ACCESS_TOKEN && secrets.WHATSAPP_PHONE_NUMBER_ID);
+  },
   async checkConnection() {
-    if (!accessToken() || !phoneNumberId()) return { ok: false, message: "Добавьте WHATSAPP_ACCESS_TOKEN и WHATSAPP_PHONE_NUMBER_ID." };
-    const data = await providerJson(await fetch(graphUrl(`${phoneNumberId()}?fields=id,display_phone_number,verified_name`), {
-      headers: { Authorization: `Bearer ${accessToken()}` },
+    const secrets = await getMessengerSecrets("whatsapp");
+    const accessToken = secrets.WHATSAPP_ACCESS_TOKEN;
+    const phoneNumberId = secrets.WHATSAPP_PHONE_NUMBER_ID;
+    const version = secrets.WHATSAPP_GRAPH_VERSION || "v24.0";
+    if (!accessToken || !phoneNumberId) return { ok: false, message: "Добавьте WHATSAPP_ACCESS_TOKEN и WHATSAPP_PHONE_NUMBER_ID." };
+    const data = await providerJson(await fetch(graphUrl(version, `${phoneNumberId}?fields=id,display_phone_number,verified_name`), {
+      headers: { Authorization: `Bearer ${accessToken}` },
       cache: "no-store"
     }));
-    const label = asString(data?.verified_name) || asString(data?.display_phone_number) || phoneNumberId();
-    return { ok: true, externalAccountId: asString(data?.id) || phoneNumberId(), message: `Номер ${label} доступен.` };
+    const label = asString(data?.verified_name) || asString(data?.display_phone_number) || phoneNumberId;
+    return { ok: true, externalAccountId: asString(data?.id) || phoneNumberId, message: `Номер ${label} доступен.` };
   },
   async sendText(conversation, text) {
-    if (!accessToken() || !phoneNumberId()) throw new Error("WhatsApp не настроен: отсутствуют серверные переменные Cloud API.");
-    const data = await providerJson(await fetch(graphUrl(`${phoneNumberId()}/messages`), {
+    const secrets = await getMessengerSecrets("whatsapp");
+    const accessToken = secrets.WHATSAPP_ACCESS_TOKEN;
+    const phoneNumberId = secrets.WHATSAPP_PHONE_NUMBER_ID;
+    const version = secrets.WHATSAPP_GRAPH_VERSION || "v24.0";
+    if (!accessToken || !phoneNumberId) throw new Error("WhatsApp не настроен: отсутствуют серверные переменные Cloud API.");
+    const data = await providerJson(await fetch(graphUrl(version, `${phoneNumberId}/messages`), {
       method: "POST",
-      headers: { Authorization: `Bearer ${accessToken()}`, "Content-Type": "application/json" },
+      headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
       body: JSON.stringify({ messaging_product: "whatsapp", recipient_type: "individual", to: conversation.externalConversationId, type: "text", text: { preview_url: false, body: text } })
     }));
     const message = asRecord(asArray(data?.messages)[0]);
     const externalMessageId = asString(message?.id);
     if (!externalMessageId) throw new Error("WhatsApp не вернул идентификатор сообщения.");
     return { externalMessageId, status: "sent" };
+  },
+  async sendMedia(conversation, attachment, caption) {
+    const secrets = await getMessengerSecrets("whatsapp");
+    const accessToken = secrets.WHATSAPP_ACCESS_TOKEN;
+    const phoneNumberId = secrets.WHATSAPP_PHONE_NUMBER_ID;
+    const version = secrets.WHATSAPP_GRAPH_VERSION || "v24.0";
+    if (!accessToken || !phoneNumberId) throw new Error("WhatsApp не настроен: отсутствуют серверные переменные Cloud API.");
+    const source = await fetch(attachment.url, { cache: "no-store" });
+    if (!source.ok) throw new Error("Не удалось прочитать медиафайл для WhatsApp.");
+    const form = new FormData();
+    form.append("messaging_product", "whatsapp");
+    form.append("type", attachment.mimeType || (attachment.type === "image" ? "image/jpeg" : "video/mp4"));
+    form.append("file", await source.blob(), attachment.name || `${attachment.type}.${attachment.type === "image" ? "jpg" : "mp4"}`);
+    const uploaded = await providerJson(await fetch(graphUrl(version, `${phoneNumberId}/media`), {
+      method: "POST", headers: { Authorization: `Bearer ${accessToken}` }, body: form
+    }));
+    const mediaId = asString(uploaded?.id);
+    if (!mediaId) throw new Error("WhatsApp не вернул идентификатор загруженного файла.");
+    const mediaPayload: Record<string, string> = { id: mediaId };
+    if (caption) mediaPayload.caption = caption;
+    const data = await providerJson(await fetch(graphUrl(version, `${phoneNumberId}/messages`), {
+      method: "POST",
+      headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ messaging_product: "whatsapp", recipient_type: "individual", to: conversation.externalConversationId, type: attachment.type, [attachment.type]: mediaPayload })
+    }));
+    const message = asRecord(asArray(data?.messages)[0]);
+    const externalMessageId = asString(message?.id);
+    if (!externalMessageId) throw new Error("WhatsApp не вернул идентификатор медиа-сообщения.");
+    return { externalMessageId, status: "sent" };
+  },
+  async downloadAttachment(attachment) {
+    const secrets = await getMessengerSecrets("whatsapp");
+    const accessToken = secrets.WHATSAPP_ACCESS_TOKEN;
+    const version = secrets.WHATSAPP_GRAPH_VERSION || "v24.0";
+    if (!accessToken || !attachment.externalId) throw new Error("Медиафайл WhatsApp недоступен.");
+    const metadata = await providerJson(await fetch(graphUrl(version, attachment.externalId), {
+      headers: { Authorization: `Bearer ${accessToken}` }, cache: "no-store"
+    }));
+    const url = asString(metadata?.url);
+    if (!url) throw new Error("WhatsApp не вернул ссылку на медиафайл.");
+    const response = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` }, cache: "no-store" });
+    if (!response.ok) throw new Error("WhatsApp не отдал медиафайл.");
+    return { body: await response.arrayBuffer(), mimeType: attachment.mimeType || asString(metadata?.mime_type) || response.headers.get("content-type") || "application/octet-stream", fileName: attachment.name };
   },
   normalizeWebhook(payload) {
     const normalized: NormalizedIncomingMessage[] = [];

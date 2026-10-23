@@ -61,6 +61,15 @@ function persistState(state: CrmState) {
 
 function migrateState(state: CrmState) {
   let changed = false;
+  if (!Array.isArray(state.warmupSequences)) {
+    state.warmupSequences = [];
+    changed = true;
+  }
+  state.warmupSequences.forEach((sequence) => {
+    const before = sequence.steps.map((step) => step.id).join("|");
+    sequence.steps.sort((a, b) => a.day - b.day || a.title.localeCompare(b.title, "ru"));
+    if (before !== sequence.steps.map((step) => step.id).join("|")) changed = true;
+  });
   const retiredUsers = state.users.filter((user) => retiredSeedUserIds.has(user.id));
   if (retiredUsers.length === 0) return { state, changed };
 
@@ -393,9 +402,10 @@ export function applyCrmAction(action: CrmAction): CrmState {
 
   if (action.type === "assign_lead") {
     const lead = state.leads.find((item) => item.id === action.payload.leadId);
-    const owner = state.users.find((item) => item.id === action.payload.ownerId);
+    const owner = state.users.find((item) => item.id === action.payload.ownerId && item.status === "active");
     if (lead && owner) {
       lead.ownerId = owner.id;
+      state.tasks.filter((task) => task.leadId === lead.id && task.status === "open").forEach((task) => { task.ownerId = owner.id; });
       addActivity(state, lead.id, "system", "Ответственный назначен", owner.fullName);
     }
   }
@@ -459,14 +469,35 @@ export function applyCrmAction(action: CrmAction): CrmState {
       lead.stage = Math.max(lead.stage, 6);
       lead.status = "warmup";
       addActivity(state, lead.id, "warmup", "Прогрев запущен", sequence.name);
-      sequence.steps.forEach((step) => addTask(state, lead.id, lead.ownerId, `${step.title} · день ${step.day}`, step.day, "medium"));
+      state.tasks = state.tasks.filter((task) => !(task.leadId === lead.id && task.automationKey?.startsWith("warmup:") && task.status === "open"));
+      [...sequence.steps]
+        .sort((a, b) => a.day - b.day || a.title.localeCompare(b.title, "ru"))
+        .forEach((step) => addTask(state, lead.id, lead.ownerId, `${step.title} · день ${step.day}`, step.day, "medium", `warmup:${sequence.id}:${step.id}`));
     }
   }
 
   if (action.type === "create_warmup_step") {
     const sequence = state.warmupSequences.find((item) => item.id === action.payload.sequenceId);
     if (sequence) {
-      sequence.steps.push({ id: id("warm"), day: action.payload.day, title: action.payload.title, message: action.payload.message, contentType: "Custom" });
+      sequence.steps.push({
+        id: id("warm"),
+        day: Math.max(0, Math.floor(action.payload.day)),
+        title: action.payload.title,
+        message: action.payload.message,
+        contentType: "Custom",
+        attachmentUrl: action.payload.attachmentUrl,
+        attachmentType: action.payload.attachmentType,
+        attachmentName: action.payload.attachmentName
+      });
+      sequence.steps.sort((a, b) => a.day - b.day || a.title.localeCompare(b.title, "ru"));
+    }
+  }
+
+  if (action.type === "delete_warmup_step") {
+    const sequence = state.warmupSequences.find((item) => item.id === action.payload.sequenceId);
+    if (sequence) {
+      sequence.steps = sequence.steps.filter((step) => step.id !== action.payload.stepId);
+      state.tasks = state.tasks.filter((task) => task.automationKey !== `warmup:${sequence.id}:${action.payload.stepId}` || task.status !== "open");
     }
   }
 

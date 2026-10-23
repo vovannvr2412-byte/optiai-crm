@@ -1,9 +1,10 @@
 import { NextResponse } from "next/server";
 import { telegramAdapter } from "@/lib/messaging/providers/telegram";
 import { saveIncomingMessage } from "@/lib/messaging/store";
+import { getMessengerSecrets } from "@/lib/messaging/secrets";
 
 export async function POST(request: Request) {
-  const secret = process.env.TELEGRAM_WEBHOOK_SECRET?.trim();
+  const secret = (await getMessengerSecrets("telegram")).TELEGRAM_WEBHOOK_SECRET;
   if (!secret || request.headers.get("x-telegram-bot-api-secret-token") !== secret) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }

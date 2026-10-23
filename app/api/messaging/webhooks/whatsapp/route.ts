@@ -2,20 +2,22 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
 import { normalizeWhatsAppStatuses, whatsappAdapter } from "@/lib/messaging/providers/whatsapp";
 import { saveIncomingMessage, updateMessageStatusByExternalId } from "@/lib/messaging/store";
+import { getMessengerSecrets } from "@/lib/messaging/secrets";
 
 export async function GET(request: Request) {
   const url = new URL(request.url);
   const mode = url.searchParams.get("hub.mode");
   const token = url.searchParams.get("hub.verify_token");
   const challenge = url.searchParams.get("hub.challenge");
-  if (mode === "subscribe" && challenge && token === process.env.WHATSAPP_VERIFY_TOKEN) {
+  const verifyToken = (await getMessengerSecrets("whatsapp")).WHATSAPP_VERIFY_TOKEN;
+  if (mode === "subscribe" && challenge && token === verifyToken) {
     return new Response(challenge, { status: 200, headers: { "Content-Type": "text/plain" } });
   }
   return NextResponse.json({ error: "Verification failed" }, { status: 403 });
 }
 
 export async function POST(request: Request) {
-  const secret = process.env.WHATSAPP_APP_SECRET?.trim();
+  const secret = (await getMessengerSecrets("whatsapp")).WHATSAPP_APP_SECRET;
   const raw = await request.text();
   const signature = request.headers.get("x-hub-signature-256") ?? "";
   if (!secret || !validSignature(raw, signature, secret)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });

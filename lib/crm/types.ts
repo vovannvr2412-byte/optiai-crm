@@ -135,6 +135,9 @@ export type WarmupStep = {
   title: string;
   message: string;
   contentType: "VSL" | "SEO audit" | "Case" | "Competitor audit" | "Custom";
+  attachmentUrl?: string;
+  attachmentType?: "image" | "video";
+  attachmentName?: string;
 };
 
 export type WarmupSequence = {
@@ -182,7 +185,8 @@ export type CrmAction =
   | { type: "mark_no_answer"; payload: { leadId: string; ownerId: string } }
   | { type: "send_message"; payload: { leadId: string; channel: string; text: string } }
   | { type: "start_warmup"; payload: { leadId: string; sequenceId: string } }
-  | { type: "create_warmup_step"; payload: { sequenceId: string; day: number; title: string; message: string } }
+  | { type: "create_warmup_step"; payload: { sequenceId: string; day: number; title: string; message: string; attachmentUrl?: string; attachmentType?: "image" | "video"; attachmentName?: string } }
+  | { type: "delete_warmup_step"; payload: { sequenceId: string; stepId: string } }
   | { type: "mark_paid"; payload: { leadId: string; tariffId: string } }
   | { type: "mark_refused"; payload: { leadId: string; reason: string } }
   | { type: "renew_subscription"; payload: { subscriptionId: string } }

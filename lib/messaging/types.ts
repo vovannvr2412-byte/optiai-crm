@@ -8,8 +8,20 @@ export type MessageContentType = "text" | "image" | "video" | "audio" | "file" |
 export type MessageAttachment = {
   type: Exclude<MessageContentType, "text" | "unknown">;
   externalId?: string;
+  url?: string;
   name?: string;
   mimeType?: string;
+};
+
+export type OutgoingMediaAttachment = MessageAttachment & {
+  type: "image" | "video";
+  url: string;
+};
+
+export type ProviderMediaDownload = {
+  body: ArrayBuffer;
+  mimeType: string;
+  fileName?: string;
 };
 
 export type MessengerConnection = {
@@ -20,6 +32,7 @@ export type MessengerConnection = {
   status: MessengerConnectionStatus;
   configured: boolean;
   webhookConfigured: boolean;
+  configuredFields: Record<string, boolean>;
   lastSyncAt?: string;
   lastErrorAt?: string;
   lastError?: string;
@@ -70,7 +83,7 @@ export type MessagingSnapshot = {
   conversations: MessengerConversation[];
   messages: MessengerMessage[];
   processedEvents: { provider: MessengerChannel; eventId: string; receivedAt: string }[];
-  connections: Omit<MessengerConnection, "configured" | "webhookConfigured" | "requiredEnv">[];
+  connections: Omit<MessengerConnection, "configured" | "webhookConfigured" | "configuredFields" | "requiredEnv">[];
 };
 
 export type NormalizedIncomingMessage = {
@@ -103,8 +116,10 @@ export type ProviderHealth = {
 
 export type ProviderAdapter = {
   channel: MessengerChannel;
-  isConfigured(): boolean;
+  isConfigured(): Promise<boolean>;
   checkConnection(): Promise<ProviderHealth>;
   sendText(conversation: MessengerConversation, text: string): Promise<ProviderSendResult>;
+  sendMedia(conversation: MessengerConversation, attachment: OutgoingMediaAttachment, caption?: string): Promise<ProviderSendResult>;
+  downloadAttachment?(attachment: MessageAttachment): Promise<ProviderMediaDownload>;
   normalizeWebhook(payload: unknown): NormalizedIncomingMessage[];
 };

@@ -4,7 +4,8 @@ import { randomUUID } from "node:crypto";
 import { createServiceSupabaseClient } from "@/lib/supabase/server";
 import { getCrmStateAsync } from "@/lib/crm/store";
 import type { CrmUser, Lead } from "@/lib/crm/types";
-import { connectionFromEnvironment, messengerChannels, safeProviderError } from "./config";
+import { connectionFromConfiguration, messengerChannels, safeProviderError } from "./config";
+import { getMessengerSecretPresence } from "./secrets";
 import type {
   MessageDeliveryStatus,
   MessengerChannel,
@@ -12,7 +13,8 @@ import type {
   MessengerConversation,
   MessengerMessage,
   MessagingSnapshot,
-  NormalizedIncomingMessage
+  NormalizedIncomingMessage,
+  OutgoingMediaAttachment
 } from "./types";
 
 const dataDir = process.env.CRM_DATA_DIR || path.join(process.cwd(), "data");
@@ -96,8 +98,7 @@ function toMessage(row: unknown): MessengerMessage {
 function canAccessConversation(user: CrmUser, conversation: MessengerConversation, leads: Lead[]) {
   if (user.role === "Руководитель" || user.role === "РОП") return true;
   const lead = conversation.leadId ? leads.find((item) => item.id === conversation.leadId) : undefined;
-  if (conversation.ownerId === user.id) return true;
-  if (lead?.ownerId !== user.id) return false;
+  if (!lead || lead.ownerId !== user.id) return false;
   return user.role !== "Аккаунт-менеджер" || lead.status === "client";
 }
 
@@ -141,6 +142,20 @@ export async function getConversationForUser(userId: string, conversationId: str
   const conversation = conversations.find((item) => item.id === conversationId);
   if (!conversation) throw new Error("Диалог не найден или недоступен.");
   return conversation;
+}
+
+export async function getMessageForUser(userId: string, messageId: string) {
+  let message: MessengerMessage | undefined;
+  if (!supabasePersistenceEnabled()) {
+    message = localSnapshot().messages.find((item) => item.id === messageId);
+  } else {
+    const { data, error } = await createServiceSupabaseClient().from("messenger_messages").select("*").eq("id", messageId).maybeSingle();
+    if (error) throw error;
+    if (data) message = toMessage(data);
+  }
+  if (!message) throw new Error("Сообщение не найдено.");
+  await getConversationForUser(userId, message.conversationId);
+  return message;
 }
 
 export async function listMessagesForUser(userId: string, conversationId: string, before?: string, limit = 40) {
@@ -200,15 +215,15 @@ export async function updateConversationForUser(userId: string, conversationId: 
   return toConversation(data);
 }
 
-export async function createPendingMessage(userId: string, conversationId: string, text: string, idempotencyKey: string) {
+export async function createPendingMessage(userId: string, conversationId: string, text: string, idempotencyKey: string, attachment?: OutgoingMediaAttachment) {
   const [conversation, { user }] = await Promise.all([getConversationForUser(userId, conversationId), accessContext(userId)]);
   const now = new Date().toISOString();
   const message: MessengerMessage = {
     id: randomUUID(), conversationId, connectionId: conversation.connectionId, channel: conversation.channel,
     idempotencyKey, direction: "outbound", senderName: user.fullName, senderExternalId: user.id,
-    text: text.trim(), sentAt: now, status: "pending", contentType: "text", attachments: [], metadata: {}
+    text: text.trim(), sentAt: now, status: "pending", contentType: attachment?.type ?? "text", attachments: attachment ? [attachment] : [], metadata: {}
   };
-  if (!message.text) throw new Error("Введите текст сообщения.");
+  if (!message.text && !attachment) throw new Error("Введите текст или прикрепите файл.");
   if (message.text.length > 4000) throw new Error("Сообщение не должно превышать 4000 символов.");
 
   if (!supabasePersistenceEnabled()) {
@@ -217,7 +232,7 @@ export async function createPendingMessage(userId: string, conversationId: strin
       if (existing) return structuredClone(existing);
       snapshot.messages.push(message);
       const item = snapshot.conversations.find((entry) => entry.id === conversationId);
-      if (item) { item.lastMessageText = message.text; item.lastMessageAt = now; item.updatedAt = now; }
+      if (item) { item.lastMessageText = message.text || (attachment?.type === "image" ? "Фото" : "Видео"); item.lastMessageAt = now; item.updatedAt = now; }
       return structuredClone(message);
     });
   }
@@ -228,7 +243,7 @@ export async function createPendingMessage(userId: string, conversationId: strin
     content_type: message.contentType, attachments: message.attachments, metadata: message.metadata
   }, { onConflict: "idempotency_key", ignoreDuplicates: false }).select("*").single();
   if (error) throw error;
-  const { error: conversationError } = await createServiceSupabaseClient().from("messenger_conversations").update({ last_message_text: message.text, last_message_at: now, updated_at: now }).eq("id", conversationId);
+  const { error: conversationError } = await createServiceSupabaseClient().from("messenger_conversations").update({ last_message_text: message.text || (attachment?.type === "image" ? "Фото" : "Видео"), last_message_at: now, updated_at: now }).eq("id", conversationId);
   if (conversationError) throw conversationError;
   return toMessage(data);
 }
@@ -359,17 +374,20 @@ export async function listConnections(): Promise<MessengerConnection[]> {
       };
     });
   }
-  return messengerChannels.map((channel) => connectionFromEnvironment(channel, saved.find((item) => item.channel === channel)));
+  const presence = await Promise.all(messengerChannels.map((channel) => getMessengerSecretPresence(channel)));
+  return messengerChannels.map((channel, index) => connectionFromConfiguration(channel, saved.find((item) => item.channel === channel), presence[index]));
 }
 
 export async function saveConnectionCheck(channel: MessengerChannel, result: { ok: boolean; externalAccountId?: string; message: string }) {
   const now = new Date().toISOString();
-  const connection = connectionFromEnvironment(channel, {
-    id: channel, channel, name: connectionFromEnvironment(channel).name,
+  const configuredFields = await getMessengerSecretPresence(channel);
+  const base = connectionFromConfiguration(channel, undefined, configuredFields);
+  const connection = connectionFromConfiguration(channel, {
+    id: channel, channel, name: base.name,
     status: result.ok ? "connected" : "error", externalAccountId: result.externalAccountId,
     lastSyncAt: result.ok ? now : undefined, lastErrorAt: result.ok ? undefined : now,
     lastError: result.ok ? undefined : safeProviderError(result.message)
-  });
+  }, configuredFields);
   if (!supabasePersistenceEnabled()) {
     await mutateLocal((snapshot) => {
       const stored = {
@@ -390,4 +408,17 @@ export async function saveConnectionCheck(channel: MessengerChannel, result: { o
   }, { onConflict: "id" });
   if (error) throw error;
   return connection;
+}
+
+export async function resetConnectionStatus(channel: MessengerChannel) {
+  const now = new Date().toISOString();
+  if (!supabasePersistenceEnabled()) {
+    await mutateLocal((snapshot) => {
+      const connection = snapshot.connections.find((item) => item.channel === channel);
+      if (connection) { connection.status = "needs_setup"; connection.lastError = undefined; connection.lastErrorAt = undefined; }
+    });
+    return;
+  }
+  const { error } = await createServiceSupabaseClient().from("messenger_connections").update({ status: "needs_setup", last_error: null, last_error_at: null, updated_at: now }).eq("channel", channel);
+  if (error) throw error;
 }

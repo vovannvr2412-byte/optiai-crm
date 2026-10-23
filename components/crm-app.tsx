@@ -8,6 +8,8 @@ import {
   CalendarClock,
   CheckCircle2,
   Flame,
+  Film,
+  ImageIcon,
   LayoutDashboard,
   LogOut,
   MessagesSquare,
@@ -23,6 +25,7 @@ import {
 import { ROLE_PERMISSIONS, STAGES, VIEW_TITLES, type CrmAction, type CrmState, type CrmUser, type Lead, type Role, type ViewId } from "@/lib/crm/types";
 import { MessengerCenter } from "@/components/messenger-center";
 import type { MessengerConnection } from "@/lib/messaging/types";
+import { uploadMediaFile } from "@/lib/media/client";
 
 type Metrics = {
   leads: number;
@@ -764,29 +767,39 @@ export function CrmApp() {
                       <strong>{sequence.name}</strong>
                       <p className="text-sm text-slate-600">{sequence.description}</p>
                     </div>
-                    <button onClick={() => setModal("warmupStep")} className="ui-button ui-button-primary">Добавить шаг</button>
+                    {(currentUser.role === "Руководитель" || currentUser.role === "РОП") && <button onClick={() => setModal("warmupStep")} className="ui-button ui-button-primary"><Plus size={16} /> Добавить шаг</button>}
                   </div>
-                  {sequence.steps.map((step) => (
+                  {sequence.steps.length === 0 && <EmptyState title="Шагов пока нет" text="Добавьте первое касание для этой цепочки." />}
+                  {[...sequence.steps].sort((a, b) => a.day - b.day || a.title.localeCompare(b.title, "ru")).map((step) => (
                     <div key={step.id} className="grid grid-cols-[80px_1fr_auto] items-center gap-3 rounded-lg border border-[#E5E7EB] bg-white p-3 max-md:grid-cols-1">
                       <span className="grid min-h-11 place-items-center rounded-lg bg-[#EEF1FF] font-semibold text-[#4357D9]">День {step.day}</span>
-                      <div>
+                      <div className="min-w-0">
                         <strong>{step.title}</strong>
                         <p className="text-sm text-slate-600">{step.message}</p>
+                        {step.attachmentUrl && <a href={step.attachmentUrl} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-2 text-sm font-semibold text-[#4357D9]">
+                          {step.attachmentType === "video" ? <Film size={16} /> : <ImageIcon size={16} />}
+                          {step.attachmentName || (step.attachmentType === "video" ? "Видео" : "Изображение")}
+                        </a>}
                       </div>
-                      <span className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-600">Назначение в воронке</span>
+                      {(currentUser.role === "Руководитель" || currentUser.role === "РОП") && <button
+                        disabled={loadingAction}
+                        onClick={() => void runAction({ type: "delete_warmup_step", payload: { sequenceId: sequence.id, stepId: step.id } }, `Шаг «${step.title}» удалён.`)}
+                        className="ui-button ui-button-secondary ui-icon-button text-[#C43B4D]"
+                        title="Удалить шаг"
+                        aria-label={`Удалить шаг ${step.title}`}
+                      ><Trash2 size={16} /></button>}
                     </div>
                   ))}
                 </div>
               ))}
             </Panel>
 
-            <Panel title="Библиотека контента" subtitle="AI подбирает материал под боль клиента.">
-              {["VSL OptiAI", "SEO-аудит", "Кейс клиента", "Аудит конкурентов", "Карта LLM-видимости"].map((item) => (
-                <button key={item} onClick={() => setActiveView("pipeline")} className="mb-2 w-full rounded-lg border border-[#E5E7EB] bg-white p-3 text-left transition-colors hover:border-[#AEB9FF]">
-                  <strong>{item}</strong>
-                  <span className="block text-sm text-slate-600">Отправляется из этапа “Прогрев” в воронке</span>
-                </button>
-              ))}
+            <Panel title="Назначить прогрев" subtitle="Цепочка создаст задачи ответственному по дням.">
+              <WarmupAssignmentForm
+                state={state}
+                submitting={loadingAction}
+                onAssign={(leadId, sequenceId) => runAction({ type: "start_warmup", payload: { leadId, sequenceId } }, "Цепочка прогрева назначена лиду.")}
+              />
             </Panel>
           </section>
         )}
@@ -878,8 +891,8 @@ export function CrmApp() {
                   <div key={lead.id} className="grid grid-cols-[1.2fr_1fr_1fr_auto] items-center gap-3 rounded-lg border border-[#E5E7EB] bg-white p-3 max-lg:grid-cols-1">
                     <strong>{lead.companyName}</strong>
                     <span>{STAGES[lead.stage]}</span>
-                    <select value={lead.ownerId} onChange={(event) => void runAction({ type: "assign_lead", payload: { leadId: lead.id, ownerId: event.target.value } }, "Ответственный изменен.")} className="ui-field">
-                      {state.users.filter((user) => user.status === "active" && (user.role === "Менеджер" || user.role === "Аккаунт-менеджер")).map((user) => <option key={user.id} value={user.id}>{user.fullName}</option>)}
+                    <select value={lead.ownerId} onChange={(event) => void runAction({ type: "assign_lead", payload: { leadId: lead.id, ownerId: event.target.value } }, "Ответственный изменен.")} className="ui-field" aria-label={`Ответственный за ${lead.companyName}`}>
+                      {state.users.filter((user) => user.status === "active").map((user) => <option key={user.id} value={user.id}>{user.fullName} · {user.role}</option>)}
                     </select>
                     <button onClick={() => openLead(lead)} className="ui-button ui-button-secondary">Открыть</button>
                   </div>
@@ -955,7 +968,7 @@ export function CrmApp() {
               }}
             />
           )}
-          {modal === "warmupStep" && <WarmupForm sequenceId={state.warmupSequences[0]?.id} onSubmit={(action) => { setModal(null); void runAction(action, "Шаг прогрева добавлен."); }} />}
+          {modal === "warmupStep" && <WarmupForm sequenceId={state.warmupSequences[0]?.id} onSubmit={async (action) => { const ok = await runAction(action, "Шаг прогрева добавлен."); if (ok) setModal(null); return ok; }} />}
           {modal === "refusal" && selectedLead && <RefusalForm leadId={selectedLead.id} onSubmit={async (action) => { const ok = await runAction(action, "Отказ сохранен с причиной."); if (ok) setModal(null); }} />}
           {modal === "integration" && (
             <IntegrationForm
@@ -1346,6 +1359,25 @@ const integrationFieldMap: Record<string, { name: string; label: string; type?: 
   ]
 };
 
+const messengerCredentialFields: Record<"telegram" | "whatsapp" | "max", { name: string; label: string; type?: string; placeholder: string }[]> = {
+  telegram: [
+    { name: "TELEGRAM_BOT_TOKEN", label: "Bot Token", type: "password", placeholder: "Токен от @BotFather" },
+    { name: "TELEGRAM_WEBHOOK_SECRET", label: "Webhook Secret", type: "password", placeholder: "Придумайте сложную секретную строку" }
+  ],
+  whatsapp: [
+    { name: "WHATSAPP_ACCESS_TOKEN", label: "Access Token", type: "password", placeholder: "Постоянный токен Meta" },
+    { name: "WHATSAPP_PHONE_NUMBER_ID", label: "Phone Number ID", placeholder: "ID номера WhatsApp" },
+    { name: "WHATSAPP_BUSINESS_ACCOUNT_ID", label: "Business Account ID", placeholder: "Необязательно" },
+    { name: "WHATSAPP_VERIFY_TOKEN", label: "Verify Token", type: "password", placeholder: "Строка для проверки webhook" },
+    { name: "WHATSAPP_APP_SECRET", label: "App Secret", type: "password", placeholder: "Секрет приложения Meta" },
+    { name: "WHATSAPP_GRAPH_VERSION", label: "Graph API Version", placeholder: "Например, v24.0" }
+  ],
+  max: [
+    { name: "MAX_BOT_TOKEN", label: "Bot Token", type: "password", placeholder: "Токен бота MAX" },
+    { name: "MAX_WEBHOOK_SECRET", label: "Webhook Secret", type: "password", placeholder: "Секрет webhook" }
+  ]
+};
+
 function IntegrationForm({ integration, onSubmit }: { integration?: CrmState["integrations"][number]; onSubmit: (action: CrmAction) => void }) {
   if (!integration) {
     return <EmptyState title="Интеграция не найдена" text="Закройте окно и выберите интеграцию заново." />;
@@ -1392,6 +1424,8 @@ function MessengerIntegrationForm({ channel }: { channel: "telegram" | "whatsapp
   const [connection, setConnection] = useState<MessengerConnection | null>(null);
   const [loading, setLoading] = useState(true);
   const [checking, setChecking] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [resetting, setResetting] = useState(false);
   const [message, setMessage] = useState("");
 
   const loadConnection = useCallback(async () => {
@@ -1429,14 +1463,60 @@ function MessengerIntegrationForm({ channel }: { channel: "telegram" | "whatsapp
     }
   }
 
+  async function save(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const values = Object.fromEntries(new FormData(form).entries()) as Record<string, string>;
+    const config = Object.fromEntries(Object.entries(values).filter(([, value]) => value.trim()));
+    if (!Object.keys(config).length) {
+      setMessage("Введите хотя бы одно новое значение. Пустые поля не изменяют сохранённые настройки.");
+      return;
+    }
+    setSaving(true);
+    setMessage("");
+    try {
+      const response = await fetch(`/api/messaging/connections/${channel}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ config })
+      });
+      const data = await response.json() as { connection?: MessengerConnection; message?: string; error?: string };
+      if (!response.ok) throw new Error(data.error || "Не удалось сохранить настройки.");
+      if (data.connection) setConnection(data.connection);
+      form.reset();
+      setMessage(data.message || "Настройки сохранены. Теперь проверьте подключение.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Не удалось сохранить настройки.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function resetSavedSettings() {
+    if (!window.confirm("Удалить сохранённые в CRM ключи этого канала? После этого будут использоваться переменные Vercel, если они заданы.")) return;
+    setResetting(true);
+    setMessage("");
+    try {
+      const response = await fetch(`/api/messaging/connections/${channel}`, { method: "DELETE" });
+      const data = await response.json() as { connection?: MessengerConnection; message?: string; error?: string };
+      if (!response.ok) throw new Error(data.error || "Не удалось удалить настройки.");
+      if (data.connection) setConnection(data.connection);
+      setMessage(data.message || "Сохранённые настройки удалены.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Не удалось удалить настройки.");
+    } finally {
+      setResetting(false);
+    }
+  }
+
   const statusLabel = connection?.status === "connected" ? "Подключён" : connection?.status === "error" ? "Ошибка" : connection?.status === "needs_setup" ? "Требует проверки" : "Не настроен";
   const webhookUrl = typeof window === "undefined" ? `/api/messaging/webhooks/${channel}` : `${window.location.origin}/api/messaging/webhooks/${channel}`;
 
   return (
-    <div className="grid gap-4">
+    <form onSubmit={save} className="grid gap-4">
       <div>
         <h2 className="pr-12 text-xl font-bold text-[#202939]">{connection?.name ?? channel}</h2>
-        <p className="mt-1 text-sm text-slate-600">Секреты задаются только в окружении сервера и никогда не возвращаются в браузер.</p>
+        <p className="mt-1 text-sm text-slate-600">Руководитель может менять ключи здесь без доступа к коду. Значения шифруются на сервере и никогда не возвращаются в браузер.</p>
       </div>
       {loading ? <p className="text-sm text-slate-500">Проверяем конфигурацию...</p> : (
         <>
@@ -1444,9 +1524,25 @@ function MessengerIntegrationForm({ channel }: { channel: "telegram" | "whatsapp
             <div className="rounded-lg border border-[#E5E7EB] p-3"><span className="text-xs text-slate-500">Состояние</span><strong className="mt-1 block">{statusLabel}</strong></div>
             <div className="rounded-lg border border-[#E5E7EB] p-3"><span className="text-xs text-slate-500">Webhook-защита</span><strong className="mt-1 block">{connection?.webhookConfigured ? "Настроена" : "Не настроена"}</strong></div>
           </div>
-          <div>
-            <strong className="text-sm">Переменные окружения</strong>
-            <div className="mt-2 flex flex-wrap gap-2">{connection?.requiredEnv.map((name) => <code key={name} className="rounded-md bg-slate-100 px-2 py-1 text-xs text-slate-700">{name}</code>)}</div>
+          <div className="grid gap-3">
+            {messengerCredentialFields[channel].map((field) => {
+              const configured = Boolean(connection?.configuredFields[field.name]);
+              return (
+                <label key={field.name} className="ui-label">
+                  <span className="flex items-center justify-between gap-3">
+                    <span>{field.label}</span>
+                    <span className={configured ? "text-xs font-semibold text-emerald-700" : "text-xs font-semibold text-slate-400"}>{configured ? "Сохранено" : "Не задано"}</span>
+                  </span>
+                  <input
+                    name={field.name}
+                    type={field.type ?? "text"}
+                    placeholder={configured ? "Оставьте пустым без изменений" : field.placeholder}
+                    autoComplete="new-password"
+                    className="ui-field"
+                  />
+                </label>
+              );
+            })}
           </div>
           <label className="ui-label">Webhook URL<input readOnly value={webhookUrl} className="ui-field bg-slate-50" /></label>
           {connection?.lastSyncAt && <p className="text-xs text-slate-500">Последняя успешная проверка: {new Date(connection.lastSyncAt).toLocaleString("ru-RU")}</p>}
@@ -1455,11 +1551,13 @@ function MessengerIntegrationForm({ channel }: { channel: "telegram" | "whatsapp
       )}
       {message && <div className="rounded-lg border border-[#DCE2EA] bg-slate-50 p-3 text-sm text-slate-700">{message}</div>}
       <div className="flex flex-wrap gap-2">
+        <button type="submit" disabled={saving || resetting} className="ui-button ui-button-primary">{saving ? "Сохраняем..." : "Сохранить ключи"}</button>
         <button type="button" disabled={checking || !connection?.configured} onClick={() => void check()} className="ui-button ui-button-primary">{checking ? "Проверяем..." : "Проверить подключение"}</button>
+        <button type="button" disabled={resetting || saving} onClick={() => void resetSavedSettings()} className="ui-button ui-button-secondary">{resetting ? "Удаляем..." : "Удалить ключи CRM"}</button>
         <a href="/messengers-setup" target="_blank" rel="noreferrer" className="ui-button ui-button-secondary">Инструкция</a>
       </div>
-      {!connection?.configured && <p className="text-xs leading-5 text-slate-500">Добавьте переменные в `.env.local` или Vercel и перезапустите приложение. До этого CRM не будет имитировать успешную отправку.</p>}
-    </div>
+      <p className="text-xs leading-5 text-slate-500">Пустое поле сохраняет прежнее значение. Переменные `.env.local` или Vercel используются как резерв, когда для канала нет соответствующего ключа в CRM.</p>
+    </form>
   );
 }
 
@@ -1701,12 +1799,54 @@ function NewLeadForm({ state, currentUser, onSubmit }: { state: CrmState; curren
   );
 }
 
-function WarmupForm({ sequenceId, onSubmit }: { sequenceId?: string; onSubmit: (action: CrmAction) => void }) {
-  function submit(event: FormEvent<HTMLFormElement>) {
+function WarmupAssignmentForm({ state, submitting, onAssign }: { state: CrmState; submitting: boolean; onAssign: (leadId: string, sequenceId: string) => Promise<boolean> }) {
+  const [leadId, setLeadId] = useState(state.leads[0]?.id ?? "");
+  const [sequenceId, setSequenceId] = useState(state.warmupSequences[0]?.id ?? "");
+
+  return <form onSubmit={(event) => { event.preventDefault(); if (leadId && sequenceId) void onAssign(leadId, sequenceId); }} className="grid gap-3">
+    <label className="ui-label">Лид<select value={leadId} onChange={(event) => setLeadId(event.target.value)} className="ui-field" required>
+      {state.leads.length === 0 && <option value="">Нет доступных лидов</option>}
+      {state.leads.map((lead) => <option key={lead.id} value={lead.id}>{lead.companyName} · {lead.contactName}</option>)}
+    </select></label>
+    <label className="ui-label">Цепочка<select value={sequenceId} onChange={(event) => setSequenceId(event.target.value)} className="ui-field" required>
+      {state.warmupSequences.map((sequence) => <option key={sequence.id} value={sequence.id}>{sequence.name}</option>)}
+    </select></label>
+    <button disabled={submitting || !leadId || !sequenceId} className="ui-button ui-button-primary">{submitting ? "Назначаем..." : "Назначить цепочку"}</button>
+  </form>;
+}
+
+function WarmupForm({ sequenceId, onSubmit }: { sequenceId?: string; onSubmit: (action: CrmAction) => Promise<boolean> }) {
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const data = Object.fromEntries(new FormData(event.currentTarget).entries()) as Record<string, string>;
+    const form = event.currentTarget;
+    const formData = new FormData(form);
+    const data = Object.fromEntries(formData.entries()) as Record<string, string | File>;
     if (!sequenceId) return;
-    onSubmit({ type: "create_warmup_step", payload: { sequenceId, day: Number(data.day), title: data.title, message: data.message } });
+    setSubmitting(true);
+    setError("");
+    try {
+      const file = data.attachment instanceof File && data.attachment.size > 0 ? data.attachment : null;
+      const uploaded = file ? await uploadMediaFile(file) : null;
+      await onSubmit({
+        type: "create_warmup_step",
+        payload: {
+          sequenceId,
+          day: Number(data.day),
+          title: String(data.title),
+          message: String(data.message),
+          attachmentUrl: uploaded?.url,
+          attachmentType: uploaded?.type,
+          attachmentName: uploaded?.name
+        }
+      });
+    } catch (uploadError) {
+      setError(uploadError instanceof Error ? uploadError.message : "Не удалось сохранить вложение.");
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   return (
@@ -1715,7 +1855,9 @@ function WarmupForm({ sequenceId, onSubmit }: { sequenceId?: string; onSubmit: (
       <FormInput name="day" label="День" type="number" required />
       <FormInput name="title" label="Название" required />
       <FormInput name="message" label="Сообщение/цель" required />
-      <button className="ui-button ui-button-primary">Добавить</button>
+      <label className="ui-label">Фото или видео<input name="attachment" type="file" accept="image/jpeg,image/png,image/webp,image/gif,video/mp4,video/quicktime,video/webm" className="ui-field file:mr-3 file:border-0 file:bg-transparent file:font-semibold" /></label>
+      {error && <p className="rounded-lg bg-rose-50 p-3 text-sm font-semibold text-rose-800">{error}</p>}
+      <button disabled={submitting} className="ui-button ui-button-primary">{submitting ? "Загружаем..." : "Добавить"}</button>
     </form>
   );
 }

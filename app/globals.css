@@ -262,7 +262,14 @@ textarea:focus-visible {
 .messenger-bubble-in { align-self: flex-start; }
 .messenger-bubble-out { align-self: flex-end; border-color: #cfd6ff; color: #263264; background: #eef1ff; }
 .messenger-bubble-failed { border-color: #f2b8c0; color: #8f2434; background: var(--danger-soft); }
-.messenger-composer { display: grid; grid-template-columns: minmax(0, 1fr) 40px; align-items: end; gap: 8px; border-top: 1px solid var(--border); padding: 12px; background: var(--surface); }
+.messenger-media-list { display: grid; gap: 6px; margin-bottom: 7px; }
+.messenger-media { display: block; width: min(100%, 420px); max-height: 360px; border-radius: 7px; object-fit: contain; background: #101828; }
+.messenger-composer-wrap { border-top: 1px solid var(--border); background: var(--surface); }
+.messenger-composer-tools { display: flex; align-items: center; gap: 8px; padding: 10px 12px 0; }
+.messenger-composer-tools > .ui-field { width: min(310px, 100%); }
+.messenger-attachment-preview { display: flex; min-width: 0; max-width: 320px; align-items: center; gap: 7px; border: 1px solid var(--border); border-radius: 8px; padding: 5px 6px 5px 9px; color: var(--text-primary); background: var(--surface-muted); font-size: 12px; font-weight: 650; }
+.messenger-attachment-preview .ui-icon-button { width: 28px; height: 28px; min-height: 28px; margin-left: auto; }
+.messenger-composer { display: grid; grid-template-columns: 40px minmax(0, 1fr) 40px; align-items: end; gap: 8px; padding: 10px 12px 12px; }
 .messenger-details { display: grid; grid-template-rows: auto minmax(0, 1fr); border-left: 1px solid var(--border); }
 .messenger-details-backdrop { position: fixed; inset: 0; z-index: 44; background: rgb(16 24 40 / 0.4); }
 
@@ -293,6 +300,9 @@ textarea:focus-visible {
   .messenger-dialogs-hidden-mobile,
   .messenger-chat-hidden-mobile { display: none; }
   .messenger-bubble { max-width: 88%; }
+  .messenger-composer-tools { align-items: stretch; flex-direction: column; }
+  .messenger-composer-tools > .ui-field,
+  .messenger-attachment-preview { width: 100%; max-width: none; }
 }
 
 @media (max-width: 640px) {

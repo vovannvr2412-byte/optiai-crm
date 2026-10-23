@@ -21,18 +21,18 @@ export default function MessengersSetupPage() {
     <main className="mx-auto max-w-3xl p-6 sm:p-10">
       <p className="text-xs font-bold uppercase text-[#536DFE]">OptiAI CRM</p>
       <h1 className="mt-2 text-3xl font-bold text-[#202939]">Подключение мессенджеров</h1>
-      <p className="mt-3 max-w-2xl leading-6 text-slate-600">Все секреты добавляются в `.env.local` или Vercel Environment Variables без префикса `NEXT_PUBLIC_`. После изменения выполните перезапуск или Redeploy.</p>
+      <p className="mt-3 max-w-2xl leading-6 text-slate-600">Войдите в CRM как руководитель, откройте «Автоматизации» и выберите нужный мессенджер. Ключи можно менять прямо в форме: они шифруются на сервере и не возвращаются в браузер.</p>
       <div className="mt-8 grid gap-4">
         {channels.map((channel) => (
           <section key={channel.name} className="rounded-lg border border-[#E5E7EB] bg-white p-5">
             <h2 className="text-lg font-bold">{channel.name}</h2>
             <p className="mt-2 text-sm leading-6 text-slate-600">{channel.steps}</p>
-            <code className="mt-3 block overflow-x-auto rounded-md bg-slate-100 p-3 text-xs text-slate-700">{channel.env}</code>
+            <code className="mt-3 block overflow-x-auto rounded-md bg-slate-100 p-3 text-xs text-slate-700">Резервные переменные Vercel: {channel.env}</code>
           </section>
         ))}
       </div>
       <section className="mt-6 border-l-4 border-[#536DFE] bg-[#EEF1FF] p-4 text-sm leading-6 text-[#263264]">
-        Для production сначала выполните миграцию `supabase/migrations/0002_messaging_center.sql`. Полная пошаговая инструкция находится в `MESSENGERS_SETUP.md` репозитория.
+        Для production сначала выполните миграции `supabase/migrations/0002_messaging_center.sql` и `supabase/migrations/0003_media_storage.sql`. В Vercel обязательно сохраните постоянный `AUTH_SECRET`: он используется для шифрования ключей. Полная пошаговая инструкция находится в `MESSENGERS_SETUP.md` репозитория.
       </section>
     </main>
   );

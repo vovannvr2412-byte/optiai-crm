@@ -1,12 +1,19 @@
-import type { MessageAttachment, ProviderAdapter } from "../types";
+import type { MessageAttachment, OutgoingMediaAttachment, ProviderAdapter } from "../types";
+import { getMessengerSecrets } from "../secrets";
 import { asArray, asRecord, asString, providerJson, unixSecondsToIso } from "./shared";
 
-function token() {
-  return process.env.TELEGRAM_BOT_TOKEN?.trim() ?? "";
+async function token() {
+  return (await getMessengerSecrets("telegram")).TELEGRAM_BOT_TOKEN;
 }
 
-function apiUrl(method: string) {
-  return `https://api.telegram.org/bot${token()}/${method}`;
+function apiUrl(botToken: string, method: string) {
+  return `https://api.telegram.org/bot${botToken}/${method}`;
+}
+
+async function mediaBlob(attachment: OutgoingMediaAttachment) {
+  const response = await fetch(attachment.url, { cache: "no-store" });
+  if (!response.ok) throw new Error("Не удалось прочитать медиафайл для Telegram.");
+  return response.blob();
 }
 
 function content(message: Record<string, unknown>) {
@@ -34,10 +41,11 @@ function content(message: Record<string, unknown>) {
 
 export const telegramAdapter: ProviderAdapter = {
   channel: "telegram",
-  isConfigured: () => Boolean(token()),
+  isConfigured: async () => Boolean(await token()),
   async checkConnection() {
-    if (!token()) return { ok: false, message: "Добавьте TELEGRAM_BOT_TOKEN." };
-    const data = await providerJson(await fetch(apiUrl("getMe"), { cache: "no-store" }));
+    const botToken = await token();
+    if (!botToken) return { ok: false, message: "Добавьте TELEGRAM_BOT_TOKEN." };
+    const data = await providerJson(await fetch(apiUrl(botToken, "getMe"), { cache: "no-store" }));
     const result = asRecord(data?.result);
     return {
       ok: data?.ok === true,
@@ -46,8 +54,9 @@ export const telegramAdapter: ProviderAdapter = {
     };
   },
   async sendText(conversation, text) {
-    if (!token()) throw new Error("Telegram не настроен: отсутствует TELEGRAM_BOT_TOKEN.");
-    const data = await providerJson(await fetch(apiUrl("sendMessage"), {
+    const botToken = await token();
+    if (!botToken) throw new Error("Telegram не настроен: отсутствует TELEGRAM_BOT_TOKEN.");
+    const data = await providerJson(await fetch(apiUrl(botToken, "sendMessage"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ chat_id: conversation.externalConversationId, text })
@@ -56,6 +65,29 @@ export const telegramAdapter: ProviderAdapter = {
     const externalMessageId = asString(result?.message_id);
     if (!externalMessageId) throw new Error("Telegram не вернул идентификатор сообщения.");
     return { externalMessageId, status: "sent" };
+  },
+  async sendMedia(conversation, attachment, caption) {
+    const botToken = await token();
+    if (!botToken) throw new Error("Telegram не настроен: отсутствует TELEGRAM_BOT_TOKEN.");
+    const field = attachment.type === "image" ? "photo" : "video";
+    const form = new FormData();
+    form.append("chat_id", conversation.externalConversationId);
+    form.append(field, await mediaBlob(attachment), attachment.name || `${attachment.type}.${attachment.type === "image" ? "jpg" : "mp4"}`);
+    if (caption) form.append("caption", caption);
+    const data = await providerJson(await fetch(apiUrl(botToken, attachment.type === "image" ? "sendPhoto" : "sendVideo"), { method: "POST", body: form }));
+    const externalMessageId = asString(asRecord(data?.result)?.message_id);
+    if (!externalMessageId) throw new Error("Telegram не вернул идентификатор медиа-сообщения.");
+    return { externalMessageId, status: "sent" };
+  },
+  async downloadAttachment(attachment) {
+    const botToken = await token();
+    if (!botToken || !attachment.externalId) throw new Error("Медиафайл Telegram недоступен.");
+    const data = await providerJson(await fetch(apiUrl(botToken, `getFile?file_id=${encodeURIComponent(attachment.externalId)}`), { cache: "no-store" }));
+    const filePath = asString(asRecord(data?.result)?.file_path);
+    if (!filePath) throw new Error("Telegram не вернул путь к файлу.");
+    const response = await fetch(`https://api.telegram.org/file/bot${botToken}/${filePath}`, { cache: "no-store" });
+    if (!response.ok) throw new Error("Telegram не отдал медиафайл.");
+    return { body: await response.arrayBuffer(), mimeType: attachment.mimeType || response.headers.get("content-type") || "application/octet-stream", fileName: attachment.name };
   },
   normalizeWebhook(payload) {
     const update = asRecord(payload);

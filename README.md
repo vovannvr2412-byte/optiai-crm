@@ -45,6 +45,8 @@ SUPABASE_SERVICE_ROLE_KEY=
 
 ```text
 supabase/migrations/0001_initial_schema.sql
+supabase/migrations/0002_messaging_center.sql
+supabase/migrations/0003_media_storage.sql
 supabase/seed.sql
 ```
 

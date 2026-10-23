@@ -15,6 +15,16 @@ const updateLeadPayloadSchema = z.object({
 });
 
 const deleteLeadPayloadSchema = z.object({ leadId: z.string().min(1) });
+const createWarmupStepPayloadSchema = z.object({
+  sequenceId: z.string().min(1),
+  day: z.number().int().min(0).max(3650),
+  title: z.string().trim().min(1).max(160),
+  message: z.string().trim().min(1).max(4000),
+  attachmentUrl: z.string().url().optional(),
+  attachmentType: z.enum(["image", "video"]).optional(),
+  attachmentName: z.string().max(255).optional()
+});
+const deleteWarmupStepPayloadSchema = z.object({ sequenceId: z.string().min(1), stepId: z.string().min(1) });
 
 export async function POST(request: Request) {
   const userId = await getSessionUserId();
@@ -39,6 +49,12 @@ export async function POST(request: Request) {
   }
   if (action.type === "delete_lead" && !deleteLeadPayloadSchema.safeParse(action.payload).success) {
     return NextResponse.json({ error: "Некорректный идентификатор лида" }, { status: 400 });
+  }
+  if (action.type === "create_warmup_step" && !createWarmupStepPayloadSchema.safeParse(action.payload).success) {
+    return NextResponse.json({ error: "Проверьте день, название, текст и вложение шага прогрева" }, { status: 400 });
+  }
+  if (action.type === "delete_warmup_step" && !deleteWarmupStepPayloadSchema.safeParse(action.payload).success) {
+    return NextResponse.json({ error: "Некорректный шаг прогрева" }, { status: 400 });
   }
   if (!canRunAction(currentUser, action, fullState)) {
     return NextResponse.json({ error: "Недостаточно прав" }, { status: 403 });
@@ -66,6 +82,7 @@ function canRunAction(user: CrmUser, action: CrmAction, state: Awaited<ReturnTyp
     return user.role === "РОП" && (action.payload.role === "Менеджер" || action.payload.role === "Аккаунт-менеджер");
   }
   if (action.type === "disable_user" || action.type === "delete_user") return false;
+  if (action.type === "create_warmup_step" || action.type === "delete_warmup_step") return user.role === "РОП";
   if (user.role === "РОП") return action.type !== "toggle_integration" && action.type !== "configure_integration";
   if (action.type === "assign_lead" || action.type === "toggle_integration" || action.type === "configure_integration" || action.type === "run_automation") {
     return false;

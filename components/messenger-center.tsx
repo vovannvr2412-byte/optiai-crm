@@ -2,9 +2,10 @@
 
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
-import { AlertCircle, ArrowLeft, Check, CheckCheck, Clock3, Link2, MessageCircle, PanelRight, RefreshCw, Search, Send, UserRound, X } from "lucide-react";
+import { AlertCircle, ArrowLeft, Check, CheckCheck, Clock3, Film, ImageIcon, Link2, MessageCircle, Paperclip, PanelRight, RefreshCw, Search, Send, Trash2, UserRound, X } from "lucide-react";
 import { STAGES, type CrmState, type CrmUser } from "@/lib/crm/types";
-import type { MessengerChannel, MessengerConversation, MessengerMessage } from "@/lib/messaging/types";
+import type { MessengerChannel, MessengerConversation, MessengerMessage, OutgoingMediaAttachment } from "@/lib/messaging/types";
+import { uploadMediaFile, type UploadedMedia } from "@/lib/media/client";
 
 type Props = {
   state: CrmState;
@@ -35,6 +36,19 @@ function DeliveryIcon({ status }: { status: MessengerMessage["status"] }) {
   return <Check size={13} aria-label="Отправлено" />;
 }
 
+function MessageMedia({ message }: { message: MessengerMessage }) {
+  if (!message.attachments.length) return null;
+  return <div className="messenger-media-list">
+    {message.attachments.map((attachment, index) => {
+      const source = attachment.url || `/api/messaging/media/${message.id}/${index}`;
+      if (attachment.type === "image") return <img // eslint-disable-line @next/next/no-img-element
+        key={`${message.id}-${index}`} src={source} alt={attachment.name || "Изображение в сообщении"} className="messenger-media" loading="lazy" />;
+      if (attachment.type === "video") return <video key={`${message.id}-${index}`} src={source} controls preload="metadata" className="messenger-media">Ваш браузер не поддерживает видео.</video>;
+      return <a key={`${message.id}-${index}`} href={source} target="_blank" rel="noreferrer" className="text-sm font-semibold underline">{attachment.name || "Открыть вложение"}</a>;
+    })}
+  </div>;
+}
+
 export function MessengerCenter({ state, currentUser, onOpenLead, onCreateLead }: Props) {
   const [conversations, setConversations] = useState<MessengerConversation[]>([]);
   const [selectedId, setSelectedId] = useState("");
@@ -48,14 +62,18 @@ export function MessengerCenter({ state, currentUser, onOpenLead, onCreateLead }
   const [hasMore, setHasMore] = useState(false);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [pendingAttachment, setPendingAttachment] = useState<UploadedMedia | null>(null);
   const [showDetails, setShowDetails] = useState(false);
   const messageViewport = useRef<HTMLDivElement>(null);
+  const fileInput = useRef<HTMLInputElement>(null);
   const shouldStickToBottom = useRef(true);
 
   const selected = conversations.find((item) => item.id === selectedId);
   const linkedLead = selected?.leadId ? state.leads.find((item) => item.id === selected.leadId) : undefined;
-  const owner = selected?.ownerId ? state.users.find((item) => item.id === selected.ownerId) : linkedLead ? state.users.find((item) => item.id === linkedLead.ownerId) : undefined;
+  const owner = linkedLead ? state.users.find((item) => item.id === linkedLead.ownerId) : selected?.ownerId ? state.users.find((item) => item.id === selected.ownerId) : undefined;
   const canAssign = currentUser.role === "Руководитель" || currentUser.role === "РОП";
+  const warmupSteps = useMemo(() => state.warmupSequences.flatMap((sequence) => sequence.steps.map((step) => ({ ...step, sequenceName: sequence.name }))).sort((a, b) => a.day - b.day || a.title.localeCompare(b.title, "ru")), [state.warmupSequences]);
 
   const loadConversations = useCallback(async (quiet = false, search = "") => {
     if (!quiet) setLoadingList(true);
@@ -138,17 +156,17 @@ export function MessengerCenter({ state, currentUser, onOpenLead, onCreateLead }
     });
   }, [conversations, currentUser.id, filter, state.leads]);
 
-  async function send(text = draft) {
+  async function send(text = draft, attachment: OutgoingMediaAttachment | UploadedMedia | null = pendingAttachment, clearComposer = true) {
     const clean = text.trim();
-    if (!selected || !clean || sending) return;
+    if (!selected || (!clean && !attachment) || sending || uploading) return;
     setSending(true);
     setMessageError("");
-    if (text === draft) setDraft("");
+    if (clearComposer) { setDraft(""); setPendingAttachment(null); }
     try {
       const response = await fetch("/api/messaging/send", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ conversationId: selected.id, text: clean, idempotencyKey: crypto.randomUUID() })
+        body: JSON.stringify({ conversationId: selected.id, text: clean, attachment: attachment ? { type: attachment.type, url: attachment.url, name: attachment.name, mimeType: attachment.mimeType } : undefined, idempotencyKey: crypto.randomUUID() })
       });
       const data = await response.json() as { message?: MessengerMessage; error?: string };
       if (data.message) setMessages((current) => [...current.filter((item) => item.id !== data.message?.id), data.message!]);
@@ -156,9 +174,36 @@ export function MessengerCenter({ state, currentUser, onOpenLead, onCreateLead }
       if (!response.ok) throw new Error(data.error || "Сообщение сохранено, но не отправлено.");
     } catch (error) {
       setMessageError(error instanceof Error ? error.message : "Не удалось отправить сообщение.");
+      if (clearComposer) { setDraft(text); setPendingAttachment(attachment as UploadedMedia | null); }
     } finally {
       setSending(false);
     }
+  }
+
+  async function attachFile(file?: File) {
+    if (!file) return;
+    setUploading(true);
+    setMessageError("");
+    try {
+      setPendingAttachment(await uploadMediaFile(file));
+    } catch (error) {
+      setMessageError(error instanceof Error ? error.message : "Не удалось загрузить файл.");
+    } finally {
+      setUploading(false);
+      if (fileInput.current) fileInput.current.value = "";
+    }
+  }
+
+  function selectWarmupStep(stepId: string) {
+    const step = warmupSteps.find((item) => item.id === stepId);
+    if (!step) return;
+    setDraft(step.message);
+    setPendingAttachment(step.attachmentUrl && step.attachmentType ? {
+      url: step.attachmentUrl,
+      type: step.attachmentType,
+      name: step.attachmentName || step.title,
+      mimeType: step.attachmentType === "image" ? "image/jpeg" : "video/mp4"
+    } : null);
   }
 
   async function updateConversation(changes: Record<string, string | null>) {
@@ -195,13 +240,16 @@ export function MessengerCenter({ state, currentUser, onOpenLead, onCreateLead }
           )}
           {filtered.map((conversation) => {
             const lead = state.leads.find((item) => item.id === conversation.leadId);
+            const conversationOwner = lead
+              ? state.users.find((item) => item.id === lead.ownerId)
+              : conversation.ownerId ? state.users.find((item) => item.id === conversation.ownerId) : undefined;
             return (
               <button key={conversation.id} onClick={() => setSelectedId(conversation.id)} className={clsx("messenger-dialog-row", selectedId === conversation.id && "messenger-dialog-row-active")}>
                 <span className="messenger-avatar">{initials(conversation.contactName)}</span>
                 <span className="min-w-0 flex-1">
                   <span className="flex items-center gap-2"><strong className="truncate text-sm">{conversation.contactName}</strong><span className={`messenger-channel messenger-channel-${conversation.channel}`}>{channelMarks[conversation.channel]}</span><time className="ml-auto shrink-0 text-xs text-slate-500">{time(conversation.lastMessageAt)}</time></span>
                   <span className="mt-1 flex items-center gap-2"><span className="truncate text-sm text-slate-600">{conversation.lastMessageText}</span>{conversation.unreadCount > 0 && <span className="messenger-unread">{conversation.unreadCount}</span>}</span>
-                  <span className="mt-1 block truncate text-xs text-slate-500">{lead ? `${lead.companyName} · ${owner?.fullName ?? "без ответственного"}` : "Лид не связан"}</span>
+                  <span className="mt-1 block truncate text-xs text-slate-500">{lead ? `${lead.companyName} · ${conversationOwner?.fullName ?? "без ответственного"}` : "Лид не связан"}</span>
                 </span>
               </button>
             );
@@ -227,18 +275,34 @@ export function MessengerCenter({ state, currentUser, onOpenLead, onCreateLead }
               {!loadingMessages && !messageError && messages.length === 0 && <div className="m-auto text-center"><strong>История пуста</strong><p className="mt-1 text-sm text-slate-500">Первое сообщение появится после реального события провайдера.</p></div>}
               {messages.map((message) => (
                 <article key={message.id} className={clsx("messenger-bubble", message.direction === "outbound" ? "messenger-bubble-out" : "messenger-bubble-in", message.status === "failed" && "messenger-bubble-failed")}>
-                  <p className="whitespace-pre-wrap break-words text-sm leading-5">{message.text}</p>
+                  <MessageMedia message={message} />
+                  {message.text && <p className="whitespace-pre-wrap break-words text-sm leading-5">{message.text}</p>}
                   <footer className="mt-1 flex items-center justify-end gap-1 text-[11px] opacity-70"><time>{fullDate(message.sentAt)}</time>{message.direction === "outbound" && <DeliveryIcon status={message.status} />}</footer>
                   {message.errorReason && <p className="mt-2 border-t border-current/15 pt-2 text-xs">{message.errorReason}</p>}
-                  {message.status === "failed" && <button disabled={sending} onClick={() => void send(message.text)} className="mt-2 text-xs font-bold underline">Повторить безопасно</button>}
+                  {message.status === "failed" && <button disabled={sending} onClick={() => { const media = message.attachments.find((item): item is OutgoingMediaAttachment => (item.type === "image" || item.type === "video") && Boolean(item.url)); void send(message.text, media ?? null, false); }} className="mt-2 text-xs font-bold underline">Повторить безопасно</button>}
                 </article>
               ))}
             </div>
             {messageError && messages.length > 0 && <div className="border-t border-rose-200 bg-rose-50 px-4 py-2 text-sm text-rose-800">{messageError}</div>}
-            <form onSubmit={(event: FormEvent) => { event.preventDefault(); void send(); }} className="messenger-composer">
-              <textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(); } }} rows={1} maxLength={4000} placeholder="Напишите сообщение" className="ui-field min-h-11 max-h-32 resize-y" />
-              <button disabled={sending || !draft.trim()} className="ui-button ui-button-primary ui-icon-button" title="Отправить" aria-label="Отправить"><Send size={17} /></button>
-            </form>
+            <div className="messenger-composer-wrap">
+              <div className="messenger-composer-tools">
+                <select defaultValue="" onChange={(event) => { selectWarmupStep(event.target.value); event.target.value = ""; }} className="ui-field min-w-0" aria-label="Выбрать материал прогрева">
+                  <option value="">Материал прогрева...</option>
+                  {warmupSteps.map((step) => <option key={step.id} value={step.id}>День {step.day} · {step.title}</option>)}
+                </select>
+                {pendingAttachment && <div className="messenger-attachment-preview">
+                  {pendingAttachment.type === "image" ? <ImageIcon size={16} /> : <Film size={16} />}
+                  <span className="truncate">{pendingAttachment.name}</span>
+                  <button type="button" onClick={() => setPendingAttachment(null)} className="ui-icon-button" title="Убрать вложение" aria-label="Убрать вложение"><Trash2 size={15} /></button>
+                </div>}
+              </div>
+              <form onSubmit={(event: FormEvent) => { event.preventDefault(); void send(); }} className="messenger-composer">
+                <input ref={fileInput} type="file" accept="image/jpeg,image/png,image/webp,image/gif,video/mp4,video/quicktime,video/webm" onChange={(event) => void attachFile(event.target.files?.[0])} className="sr-only" />
+                <button type="button" onClick={() => fileInput.current?.click()} disabled={sending || uploading} className="ui-button ui-button-secondary ui-icon-button" title="Прикрепить фото или видео" aria-label="Прикрепить фото или видео"><Paperclip size={17} /></button>
+                <textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(); } }} rows={1} maxLength={4000} placeholder={uploading ? "Загружаем файл..." : "Напишите сообщение"} className="ui-field min-h-11 max-h-32 resize-y" />
+                <button disabled={sending || uploading || (!draft.trim() && !pendingAttachment)} className="ui-button ui-button-primary ui-icon-button" title="Отправить" aria-label="Отправить"><Send size={17} /></button>
+              </form>
+            </div>
           </>
         )}
       </div>
