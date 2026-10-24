@@ -31,6 +31,7 @@ const initial = await sql("supabase/migrations/0001_initial_schema.sql");
 const messaging = await sql("supabase/migrations/0002_messaging_center.sql");
 const media = await sql("supabase/migrations/0003_media_storage.sql");
 const normalized = await sql("supabase/migrations/0004_normalized_crm_and_auth.sql");
+const security = await sql("supabase/migrations/0005_single_company_security.sql");
 const seed = await sql("supabase/seed.sql");
 
 await db.exec(initial);
@@ -42,6 +43,8 @@ await db.exec(media);
 await db.exec(media);
 await db.exec(normalized);
 await db.exec(normalized);
+await db.exec(security);
+await db.exec(security);
 
 const userId = "20000000-0000-0000-0000-000000000001";
 const tariffId = "10000000-0000-0000-0000-000000000001";
@@ -95,5 +98,13 @@ assert.equal(restored.leads[0].companyName, "Test Company");
 assert.equal(restored.leads[0].ownerId, userId);
 assert.equal(restored.warmupSequences[0].steps.length, 1);
 
-console.log("Migrations OK: schema is repeatable and normalized CRM state round-trips correctly.");
+const auditTable = await db.query("select count(*)::integer as count from information_schema.tables where table_schema = 'public' and table_name = 'security_audit_log'");
+assert.equal(auditTable.rows[0].count, 1);
+const securityPolicies = await db.query("select policyname from pg_policies where schemaname = 'public'");
+const policyNames = new Set(securityPolicies.rows.map((row) => row.policyname));
+assert(policyNames.has("role based lead read"));
+assert(policyNames.has("users read own profile"));
+assert(policyNames.has("management reads security audit"));
+
+console.log("Migrations OK: schema is repeatable, RLS policies exist, and normalized CRM state round-trips correctly.");
 await db.close();

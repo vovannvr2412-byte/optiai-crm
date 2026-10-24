@@ -17,17 +17,17 @@ npm run dev
 
 Открыть: `http://localhost:3000`.
 
-Без Supabase-ключей продукт работает в demo-mode через Next API и in-memory CRM-store. Это нужно, чтобы интерфейс, API-действия и бизнес-логика были доступны сразу.
+Без Supabase-ключей интерфейс и основная бизнес-логика работают в локальном режиме. Приглашения сотрудников, восстановление пароля и постоянная работа с нескольких устройств требуют Supabase.
 
 ## Вход в CRM
 
 В локальном demo-mode включен вход по email и паролю через HTTP-only cookie-сессию. Список аккаунтов и паролей не показывается на странице входа.
 
-Новые сотрудники создаются руководителем во вкладке `Команда` с временным паролем. После выхода они могут войти уже под своим email.
+Новых сотрудников приглашает руководитель или РОП во вкладке `Команда`. Сотрудник получает письмо Supabase и самостоятельно задаёт пароль; руководитель пароль не видит.
 
 Для production нужно задать `AUTH_SECRET` в `.env.local`. При HTTPS также выставить `AUTH_COOKIE_SECURE=true`.
 
-В production используется Supabase Auth. Существующие аккаунты автоматически переносятся при первом успешном входе, а новые сотрудники сразу создаются в CRM и Auth. Подробно: `supabase/AUTH_SETUP.md`.
+В production используется Supabase Auth. Поддерживаются приглашения, восстановление и смена пароля, отзыв сессий, блокировка и удаление аккаунта. Подробно: `supabase/AUTH_SETUP.md`.
 
 ## Supabase
 
@@ -39,19 +39,23 @@ npm run dev
 NEXT_PUBLIC_SUPABASE_URL=
 NEXT_PUBLIC_SUPABASE_ANON_KEY=
 SUPABASE_SERVICE_ROLE_KEY=
+NEXT_PUBLIC_SITE_URL=http://localhost:3000
 ```
 
 4. Выполнить SQL:
 
 ```text
 supabase/migrations/0001_initial_schema.sql
+supabase/seed.sql
 supabase/migrations/0002_messaging_center.sql
 supabase/migrations/0003_media_storage.sql
 supabase/migrations/0004_normalized_crm_and_auth.sql
-supabase/seed.sql
+supabase/migrations/0005_single_company_security.sql
 ```
 
 `0004_normalized_crm_and_auth.sql` переключает CRM с общей JSON-записи на нормализованные таблицы. При первом входе приложение сохраняет резервную копию `crm_state_backup_v1`, переносит связанные сущности, обновляет идентификаторы диалогов и создаёт маркер `normalized_storage_v1`.
+
+`0005_single_company_security.sql` добавляет жизненный цикл аккаунтов, журнал безопасности и точные RLS-права для одной компании. Менеджер получает только назначенные ему сделки, аккаунт-менеджер - только назначенных действующих клиентов. Секреты интеграций шифруются сервером через AES-256-GCM и не возвращаются в браузер.
 
 Схема содержит:
 
@@ -64,6 +68,7 @@ supabase/seed.sql
 - `warmup_sequences`, `warmup_steps`, `warmup_assignments` - система прогрева;
 - `subscriptions`, `payments` - подписки, платежи, продления;
 - `integrations` - Telegram, WhatsApp, MAX, Instagram, Avito, Google Sheets, Яндекс Метрика, RoboKassa, SIP.
+- `security_audit_log` - входы и административные действия без паролей и API-ключей.
 
 RLS-политики ограничивают доступ:
 
@@ -76,7 +81,7 @@ RLS-политики ограничивают доступ:
 
 Клиент работает через API:
 
-- `GET /api/crm/bootstrap?userId=...` - состояние CRM, отфильтрованное по роли;
+- `GET /api/crm/bootstrap` - состояние CRM, отфильтрованное по защищённой сессии;
 - `POST /api/crm/actions` - бизнес-действия:
   - `create_user`;
   - `create_lead`;
@@ -98,6 +103,6 @@ RLS-политики ограничивают доступ:
 2. Выбрать свой аккаунт.
 3. Перейти в `Воронка` или `Call Center`.
 4. Сделать звонки из списка.
-5. AI автоматически заполняет карточку, summary, боль, возражения, следующий шаг.
+5. После подключения AI-провайдера анализ звонка заполняет карточку, summary, боль, возражения и следующий шаг.
 6. CRM запускает прогрев или ставит задачу.
 7. Руководитель видит прогноз, MRR, Churn, LTV, конверсии и статус каждого клиента.

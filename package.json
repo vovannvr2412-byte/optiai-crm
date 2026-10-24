@@ -9,7 +9,8 @@
     "serve": "node server.mjs",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test:migrations": "node scripts/validate-migrations.mjs"
+    "test:migrations": "node scripts/validate-migrations.mjs",
+    "test:security:live": "node --env-file=.env.local scripts/verify-live-security.mjs"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.7",

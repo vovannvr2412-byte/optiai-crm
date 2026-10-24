@@ -173,7 +173,7 @@ export type CrmState = {
 export type LeadUpdate = Partial<Omit<Lead, "id" | "status" | "score" | "temperature" | "createdAt">>;
 
 export type CrmAction =
-  | { type: "create_user"; payload: Pick<CrmUser, "fullName" | "email" | "role" | "position"> & { password: string } }
+  | { type: "create_user"; payload: Pick<CrmUser, "fullName" | "email" | "role" | "position"> }
   | { type: "disable_user"; payload: { userId: string } }
   | { type: "delete_user"; payload: { userId: string } }
   | { type: "create_lead"; payload: Omit<Lead, "id" | "stage" | "status" | "score" | "temperature" | "createdAt"> }

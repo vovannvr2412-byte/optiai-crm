@@ -1,10 +1,11 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { disableCredential, ensureCredentials, verifyCredential } from "@/lib/auth/credentials";
-import { linkAuthenticatedUser, provisionSupabaseAuthUser } from "@/lib/auth/supabase-users";
+import { linkAuthenticatedUser, markCrmUserLogin, provisionSupabaseAuthUser } from "@/lib/auth/supabase-users";
 import { setSession } from "@/lib/auth/session";
 import { createServerAuthClient, supabaseAuthEnabled } from "@/lib/supabase/auth";
 import { getCrmStateAsync, persistCredentialsAsync } from "@/lib/crm/store";
+import { recordSecurityAuditSafe } from "@/lib/security/audit";
 
 export const runtime = "nodejs";
 
@@ -65,6 +66,8 @@ async function loginWithSupabase(email: string, password: string) {
     }
 
     await linkAuthenticatedUser(crmUser, result.data.user);
+    await markCrmUserLogin(crmUser.id);
+    await recordSecurityAuditSafe(crmUser, "auth.login", "crm_user", crmUser.id);
     return NextResponse.json({ user: crmUser }, {
       headers: { "Cache-Control": "private, no-store" }
     });

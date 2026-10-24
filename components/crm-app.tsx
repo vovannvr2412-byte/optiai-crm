@@ -10,6 +10,7 @@ import {
   Flame,
   Film,
   ImageIcon,
+  KeyRound,
   LayoutDashboard,
   LogOut,
   MessagesSquare,
@@ -26,6 +27,7 @@ import { ROLE_PERMISSIONS, STAGES, VIEW_TITLES, type CrmAction, type CrmState, t
 import { MessengerCenter } from "@/components/messenger-center";
 import type { MessengerConnection } from "@/lib/messaging/types";
 import { uploadMediaFile } from "@/lib/media/client";
+import { AccountPasswordForm } from "@/components/account-password-form";
 
 type Metrics = {
   leads: number;
@@ -42,9 +44,34 @@ type Bootstrap = {
   currentUser: CrmUser;
   state: CrmState;
   metrics: Metrics;
+  auditLog?: {
+    id: number;
+    actorEmail: string;
+    actorRole: string;
+    action: string;
+    entityType: string;
+    entityId?: string;
+    details: Record<string, unknown>;
+    createdAt: string;
+  }[];
 };
 
-type Modal = "newUser" | "newLead" | "editLead" | "deleteLead" | "warmupStep" | "refusal" | "integration" | null;
+const auditActionLabels: Record<string, string> = {
+  "auth.login": "Вход в CRM",
+  "auth.password_changed": "Пароль изменен",
+  "user.invited": "Сотрудник приглашен",
+  "user.disabled": "Аккаунт отключен",
+  "user.deleted": "Аккаунт удален",
+  "lead.assigned": "Лид переназначен",
+  "lead.deleted": "Лид удален",
+  "integration.configured": "Интеграция настроена",
+  "integration.status_changed": "Статус интеграции изменен",
+  "messenger.credentials_updated": "Ключи мессенджера обновлены",
+  "messenger.credentials_deleted": "Ключи мессенджера удалены",
+  "messenger.connection_checked": "Подключение мессенджера проверено"
+};
+
+type Modal = "newUser" | "newLead" | "editLead" | "deleteLead" | "warmupStep" | "refusal" | "integration" | "password" | null;
 
 const navItems: { id: ViewId; icon: typeof LayoutDashboard }[] = [
   { id: "dashboard", icon: LayoutDashboard },
@@ -183,6 +210,8 @@ export function CrmApp() {
   const currentUser = bootstrap?.currentUser;
   const allowedViews = currentUser ? ROLE_PERMISSIONS[currentUser.role] : ROLE_PERMISSIONS["Руководитель"];
   const canCreateUsers = currentUser?.role === "Руководитель" || currentUser?.role === "РОП";
+  const canCreateLeads = currentUser?.role !== "Аккаунт-менеджер";
+  const canDeleteLeads = currentUser?.role === "Руководитель" || currentUser?.role === "РОП";
 
   useEffect(() => {
     if (selectedLeadId) window.sessionStorage.setItem("optiai:selectedLeadId", selectedLeadId);
@@ -426,7 +455,13 @@ export function CrmApp() {
           <span className="block truncate text-xs text-slate-400">{currentUser.email}</span>
           <span className="mt-2 inline-flex rounded-md bg-white/10 px-2 py-1 text-xs font-semibold text-slate-200">{currentUser.role}</span>
           <p className="mt-3 text-xs leading-5 text-slate-400">{roleDescriptions[currentUser.role]}</p>
+          <button onClick={() => setModal("password")} className="mt-3 flex items-center gap-2 text-xs font-semibold text-slate-200 hover:text-white">
+            <KeyRound size={14} /> Сменить пароль
+          </button>
         </div>
+        <button onClick={() => setModal("password")} className="crm-logout lg:hidden" aria-label="Сменить пароль">
+          <KeyRound size={17} /> <span>Пароль</span>
+        </button>
         <button
           aria-label="Выйти из аккаунта"
           onClick={async () => {
@@ -491,9 +526,9 @@ export function CrmApp() {
             >
               <PhoneCall size={19} />
             </button>
-            <button onClick={() => setModal("newLead")} className="ui-button ui-button-primary">
+            {canCreateLeads && <button onClick={() => setModal("newLead")} className="ui-button ui-button-primary">
               <Plus size={18} /> Новый лид
-            </button>
+            </button>}
           </div>
         </header>
 
@@ -683,6 +718,7 @@ export function CrmApp() {
                 onClear={() => setSelectedLeadId("")}
                 onEdit={() => setModal("editLead")}
                 onDelete={() => setModal("deleteLead")}
+                canDelete={canDeleteLeads}
                 onOpenCard={() => selectedLead && viewLead(selectedLead)}
               >
                 {selectedLead ? renderPipelineActions(selectedLead) : null}
@@ -858,7 +894,7 @@ export function CrmApp() {
                         <span className="rounded-md bg-slate-50 p-2">{state.leads.filter((lead) => lead.ownerId === user.id).length} сделок</span>
                       </div>
                       <div className="mt-3 flex flex-wrap gap-2">
-                        <span className="rounded-md bg-[#EEF1FF] px-3 py-2 text-sm font-semibold text-[#4357D9]">Вход только по паролю</span>
+                        <span className="rounded-md bg-[#EEF1FF] px-3 py-2 text-sm font-semibold text-[#4357D9]">Supabase Auth · персональный пароль</span>
                         {currentUser.role === "Руководитель" && user.role !== "Руководитель" && (
                           <>
                             <button onClick={() => void runAction({ type: "disable_user", payload: { userId: user.id } }, "Аккаунт отключен, сделки переназначены.")} className="ui-button ui-button-secondary">Отключить</button>
@@ -895,6 +931,21 @@ export function CrmApp() {
                       {state.users.filter((user) => user.status === "active").map((user) => <option key={user.id} value={user.id}>{user.fullName} · {user.role}</option>)}
                     </select>
                     <button onClick={() => openLead(lead)} className="ui-button ui-button-secondary">Открыть</button>
+                  </div>
+                ))}
+              </div>
+            </Panel>
+
+            <Panel title="Журнал безопасности" subtitle="Последние входы и административные действия без паролей и API-ключей.">
+              <div className="grid gap-2">
+                {(bootstrap.auditLog ?? []).length === 0 && <EmptyState title="Событий пока нет" text="Новые входы, приглашения и изменения интеграций появятся здесь." />}
+                {(bootstrap.auditLog ?? []).map((entry) => (
+                  <div key={entry.id} className="grid grid-cols-[1fr_auto] items-center gap-3 border-b border-slate-100 py-2 last:border-0 max-sm:grid-cols-1">
+                    <div>
+                      <strong className="block text-sm text-[#202939]">{auditActionLabels[entry.action] ?? entry.action}</strong>
+                      <span className="text-xs text-slate-500">{entry.actorEmail} · {entry.actorRole}</span>
+                    </div>
+                    <time className="text-xs text-slate-500" dateTime={entry.createdAt}>{new Date(entry.createdAt).toLocaleString("ru-RU")}</time>
                   </div>
                 ))}
               </div>
@@ -943,7 +994,8 @@ export function CrmApp() {
 
       {modal && (
         <ModalShell onClose={() => setModal(null)}>
-          {modal === "newUser" && <NewUserForm currentUser={currentUser} onSubmit={(action) => { setModal(null); void runAction(action, "Аккаунт создан."); }} />}
+          {modal === "newUser" && <NewUserForm currentUser={currentUser} onSubmit={async (action) => { const ok = await runAction(action, "Приглашение отправлено сотруднику."); if (ok) setModal(null); }} />}
+          {modal === "password" && <AccountPasswordForm onCancel={() => setModal(null)} onSuccess={() => { setBootstrap(null); setModal(null); }} />}
           {modal === "newLead" && <NewLeadForm state={state} currentUser={currentUser} onSubmit={async (action) => { const ok = await runAction(action, "Лид создан и задача поставлена."); if (ok) setModal(null); }} />}
           {modal === "editLead" && selectedLead && (
             <EditLeadForm
@@ -989,6 +1041,8 @@ function LoginScreen({ onLogin }: { onLogin: () => Promise<boolean> }) {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [resetMode, setResetMode] = useState(false);
+  const [notice, setNotice] = useState("");
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1009,6 +1063,21 @@ function LoginScreen({ onLogin }: { onLogin: () => Promise<boolean> }) {
     setSubmitting(false);
   }
 
+  async function requestReset() {
+    setSubmitting(true);
+    setError("");
+    setNotice("");
+    const response = await fetch("/api/auth/password-reset/request", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email })
+    });
+    const data = (await response.json().catch(() => null)) as { error?: string; message?: string } | null;
+    if (!response.ok) setError(data?.error ?? "Не удалось отправить письмо.");
+    else setNotice(data?.message ?? "Проверьте почту.");
+    setSubmitting(false);
+  }
+
   return (
     <main className="grid min-h-[100dvh] place-items-center bg-[#F5F7FA] p-4">
       <section className="grid w-[min(920px,100%)] grid-cols-[.85fr_1.15fr] overflow-hidden rounded-xl border border-[#E5E7EB] bg-white shadow-[0_12px_28px_rgb(16_24_40/0.10)] max-lg:grid-cols-1">
@@ -1021,22 +1090,26 @@ function LoginScreen({ onLogin }: { onLogin: () => Promise<boolean> }) {
           <p className="text-xs leading-5 text-slate-400">Доступ к аккаунтам выдает руководитель. Данные и разделы ограничены ролью сотрудника.</p>
         </div>
 
-        <form onSubmit={submit} className="grid content-center gap-5 p-10 max-md:p-6">
+        <form onSubmit={resetMode ? (event) => { event.preventDefault(); void requestReset(); } : submit} className="grid content-center gap-5 p-10 max-md:p-6">
           <div>
-            <h2 className="text-2xl font-bold text-[#202939]">Вход в CRM</h2>
-            <p className="mt-2 text-sm text-slate-600">Введите рабочий email и пароль.</p>
+            <h2 className="text-2xl font-bold text-[#202939]">{resetMode ? "Восстановление пароля" : "Вход в CRM"}</h2>
+            <p className="mt-2 text-sm text-slate-600">{resetMode ? "Укажите рабочий email. Supabase отправит защищенную ссылку." : "Введите рабочий email и пароль."}</p>
           </div>
           <label className="ui-label">
             Email
             <input value={email} onChange={(event) => setEmail(event.target.value)} type="email" autoComplete="username" required className="ui-field" />
           </label>
-          <label className="ui-label">
+          {!resetMode && <label className="ui-label">
             Пароль
             <input value={password} onChange={(event) => setPassword(event.target.value)} type="password" autoComplete="current-password" required className="ui-field" />
-          </label>
+          </label>}
           {error && <div role="alert" className="rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm font-semibold text-rose-800">{error}</div>}
+          {notice && <div role="status" className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm font-semibold text-emerald-800">{notice}</div>}
           <button disabled={submitting} className="ui-button ui-button-primary w-full">
-            {submitting ? "Входим..." : "Войти"}
+            {submitting ? (resetMode ? "Отправляем..." : "Входим...") : resetMode ? "Отправить ссылку" : "Войти"}
+          </button>
+          <button type="button" onClick={() => { setResetMode((value) => !value); setError(""); setNotice(""); }} className="text-sm font-semibold text-[#4357D9] hover:underline">
+            {resetMode ? "Вернуться ко входу" : "Забыли пароль?"}
           </button>
         </form>
       </section>
@@ -1081,6 +1154,7 @@ function PipelineLeadDetail({
   onClear,
   onEdit,
   onDelete,
+  canDelete,
   onOpenCard,
   children
 }: {
@@ -1089,6 +1163,7 @@ function PipelineLeadDetail({
   onClear: () => void;
   onEdit: () => void;
   onDelete: () => void;
+  canDelete: boolean;
   onOpenCard: () => void;
   children: React.ReactNode;
 }) {
@@ -1166,7 +1241,7 @@ function PipelineLeadDetail({
         <button type="button" onClick={onEdit} className="ui-button ui-button-secondary"><Pencil size={15} /> Редактировать</button>
         <button type="button" onClick={onOpenCard} className="ui-button ui-button-secondary">Полная карточка</button>
       </div>
-      <button type="button" onClick={onDelete} className="ui-button ui-button-danger mt-2 w-full"><Trash2 size={15} /> Удалить лида</button>
+      {canDelete && <button type="button" onClick={onDelete} className="ui-button ui-button-danger mt-2 w-full"><Trash2 size={15} /> Удалить лида</button>}
     </aside>
   );
 }
@@ -1287,7 +1362,7 @@ function ModalShell({ children, onClose }: { children: React.ReactNode; onClose:
   );
 }
 
-function NewUserForm({ currentUser, onSubmit }: { currentUser: CrmUser; onSubmit: (action: CrmAction) => void }) {
+function NewUserForm({ currentUser, onSubmit }: { currentUser: CrmUser; onSubmit: (action: CrmAction) => void | Promise<void> }) {
   const allowedRoles: Role[] = currentUser.role === "Руководитель"
     ? ["Менеджер", "Аккаунт-менеджер", "РОП", "Руководитель"]
     : ["Менеджер", "Аккаунт-менеджер"];
@@ -1295,7 +1370,7 @@ function NewUserForm({ currentUser, onSubmit }: { currentUser: CrmUser; onSubmit
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const data = Object.fromEntries(new FormData(event.currentTarget).entries()) as Record<string, string>;
-    onSubmit({ type: "create_user", payload: { fullName: data.fullName, email: data.email, role: data.role as Role, position: data.position, password: data.password } });
+    void onSubmit({ type: "create_user", payload: { fullName: data.fullName, email: data.email, role: data.role as Role, position: data.position } });
   }
 
   return (
@@ -1303,7 +1378,7 @@ function NewUserForm({ currentUser, onSubmit }: { currentUser: CrmUser; onSubmit
       <h2 className="pr-12 text-xl font-bold text-[#202939]">Добавить сотрудника</h2>
       <FormInput name="fullName" label="Имя и фамилия" required />
       <FormInput name="email" label="Email" type="email" required />
-      <FormInput name="password" label="Временный пароль" type="password" required minLength={8} />
+      <p className="text-sm leading-5 text-slate-600">Сотрудник получит письмо от Supabase и сам задаст персональный пароль. Руководитель пароль не увидит.</p>
       <label className="ui-label">
         Роль
         <select name="role" className="ui-field">
@@ -1311,7 +1386,7 @@ function NewUserForm({ currentUser, onSubmit }: { currentUser: CrmUser; onSubmit
         </select>
       </label>
       <FormInput name="position" label="Должность" required />
-      <button className="ui-button ui-button-primary">Создать аккаунт</button>
+      <button className="ui-button ui-button-primary">Отправить приглашение</button>
     </form>
   );
 }

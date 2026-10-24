@@ -55,10 +55,46 @@ export async function provisionSupabaseAuthUser(user: CrmUser, password: string)
   return authUser;
 }
 
+export async function inviteSupabaseAuthUser(user: CrmUser, redirectTo: string) {
+  const supabase = createServiceSupabaseClient();
+  const existing = await findAuthUserByEmail(user.email);
+  if (existing) throw new Error("Пользователь с таким email уже существует в Supabase Auth.");
+
+  const { data, error } = await supabase.auth.admin.inviteUserByEmail(user.email, {
+    redirectTo,
+    data: { full_name: user.fullName, position: user.position }
+  });
+  if (error) throw error;
+
+  try {
+    const { data: updated, error: updateError } = await supabase.auth.admin.updateUserById(data.user.id, userMetadata(user));
+    if (updateError) throw updateError;
+    await linkCrmUser(user, updated.user);
+
+    const { error: crmError } = await supabase
+      .from("crm_users")
+      .update({ invited_at: new Date().toISOString() })
+      .eq("id", user.id);
+    if (crmError && crmError.code !== "42703" && crmError.code !== "PGRST204") throw crmError;
+    return updated.user;
+  } catch (error) {
+    await supabase.auth.admin.deleteUser(data.user.id).catch(() => undefined);
+    throw error;
+  }
+}
+
 export async function linkAuthenticatedUser(user: CrmUser, authUser: User) {
   const { data, error } = await createServiceSupabaseClient().auth.admin.updateUserById(authUser.id, userMetadata(user));
   if (error) throw error;
   await linkCrmUser(user, data.user);
+}
+
+export async function markCrmUserLogin(userId: string) {
+  const { error } = await createServiceSupabaseClient()
+    .from("crm_users")
+    .update({ last_login_at: new Date().toISOString() })
+    .eq("id", userId);
+  if (error && error.code !== "42703" && error.code !== "PGRST204") throw error;
 }
 
 async function authUserIdForCrmUser(userId: string) {

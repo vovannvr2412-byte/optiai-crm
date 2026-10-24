@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import { createServiceSupabaseClient } from "@/lib/supabase/server";
+import { getSessionUserId } from "@/lib/auth/session";
+import { getCrmStateAsync } from "@/lib/crm/store";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -9,7 +11,19 @@ function errorText(error: unknown) {
   return String(error);
 }
 
-export async function GET() {
+export async function GET(request: Request) {
+  if (process.env.NODE_ENV === "production") {
+    const configuredToken = process.env.DIAGNOSTICS_TOKEN?.trim();
+    const suppliedToken = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
+    const tokenAccepted = Boolean(configuredToken && suppliedToken === configuredToken);
+    if (!tokenAccepted) {
+      const userId = await getSessionUserId();
+      const user = userId ? (await getCrmStateAsync()).users.find((item) => item.id === userId) : null;
+      if (!user || user.role !== "Руководитель") {
+        return NextResponse.json({ error: "Диагностика доступна только руководителю." }, { status: 401 });
+      }
+    }
+  }
   const env = {
     hasSupabaseUrl: Boolean(process.env.NEXT_PUBLIC_SUPABASE_URL),
     hasServiceRoleKey: Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY),

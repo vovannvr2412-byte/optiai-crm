@@ -1,9 +1,12 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getSessionUserId } from "@/lib/auth/session";
-import { banSupabaseAuthUser, deleteSupabaseAuthUser, getAuthUserIdForCrmUser, provisionSupabaseAuthUser } from "@/lib/auth/supabase-users";
+import { banSupabaseAuthUser, deleteSupabaseAuthUser, getAuthUserIdForCrmUser, inviteSupabaseAuthUser } from "@/lib/auth/supabase-users";
+import { passwordSetupUrl } from "@/lib/auth/urls";
 import { applyCrmActionAsync, dashboardMetrics, getCrmStateAsync, scopedStateForAsync } from "@/lib/crm/store";
 import type { CrmAction, CrmUser } from "@/lib/crm/types";
+import { saveIntegrationSecrets } from "@/lib/integrations/secrets";
+import { auditDescriptor, listSecurityAudit, recordSecurityAuditSafe } from "@/lib/security/audit";
 import { supabaseAuthEnabled } from "@/lib/supabase/auth";
 
 const actionSchema = z.object({
@@ -21,8 +24,11 @@ const createUserPayloadSchema = z.object({
   fullName: z.string().trim().min(2).max(120),
   email: z.string().email(),
   role: z.enum(["Руководитель", "РОП", "Менеджер", "Аккаунт-менеджер"]),
-  position: z.string().trim().min(2).max(120),
-  password: z.string().min(8).max(128)
+  position: z.string().trim().min(2).max(120)
+});
+const configureIntegrationPayloadSchema = z.object({
+  integrationId: z.string().min(1).max(80),
+  config: z.record(z.string().min(1).max(100), z.string().max(12000)).refine((value) => Object.keys(value).length <= 30)
 });
 const createWarmupStepPayloadSchema = z.object({
   sequenceId: z.string().min(1),
@@ -54,7 +60,10 @@ export async function POST(request: Request) {
 
   const action = parsed.data as CrmAction;
   if (action.type === "create_user" && !createUserPayloadSchema.safeParse(action.payload).success) {
-    return NextResponse.json({ error: "Укажите корректные данные и пароль не короче 8 символов" }, { status: 400 });
+    return NextResponse.json({ error: "Укажите корректные данные сотрудника" }, { status: 400 });
+  }
+  if (action.type === "configure_integration" && !configureIntegrationPayloadSchema.safeParse(action.payload).success) {
+    return NextResponse.json({ error: "Проверьте поля интеграции" }, { status: 400 });
   }
   if (action.type === "update_lead" && !updateLeadPayloadSchema.safeParse(action.payload).success) {
     return NextResponse.json({ error: "Проверьте поля формы редактирования лида" }, { status: 400 });
@@ -71,20 +80,31 @@ export async function POST(request: Request) {
   if (!canRunAction(currentUser, action, fullState)) {
     return NextResponse.json({ error: "Недостаточно прав" }, { status: 403 });
   }
+  if (action.type === "create_user" && !supabaseAuthEnabled()) {
+    return NextResponse.json({ error: "Для приглашения сотрудников подключите Supabase Auth." }, { status: 503 });
+  }
+  if ((action.type === "configure_integration" || action.type === "toggle_integration")
+    && !fullState.integrations.some((item) => item.id === action.payload.integrationId)) {
+    return NextResponse.json({ error: "Интеграция не найдена" }, { status: 404 });
+  }
 
   let state;
+  let createdUser: CrmUser | undefined;
   try {
     const deletedAuthUserId = action.type === "delete_user" && supabaseAuthEnabled()
       ? await getAuthUserIdForCrmUser(action.payload.userId)
       : null;
+    if (action.type === "configure_integration") {
+      await saveIntegrationSecrets(action.payload.integrationId, action.payload.config);
+    }
     await applyCrmActionAsync(action);
     if (supabaseAuthEnabled()) {
       if (action.type === "create_user") {
         const savedState = await getCrmStateAsync();
-        const createdUser = savedState.users.find((user) => user.email.toLowerCase() === action.payload.email.trim().toLowerCase());
+        createdUser = savedState.users.find((user) => user.email.toLowerCase() === action.payload.email.trim().toLowerCase());
         if (!createdUser) throw new Error("Созданный сотрудник не найден в CRM.");
         try {
-          await provisionSupabaseAuthUser(createdUser, action.payload.password);
+          await inviteSupabaseAuthUser(createdUser, passwordSetupUrl(request));
         } catch (error) {
           await applyCrmActionAsync({ type: "delete_user", payload: { userId: createdUser.id } });
           throw error;
@@ -94,33 +114,53 @@ export async function POST(request: Request) {
       if (action.type === "delete_user") await deleteSupabaseAuthUser(deletedAuthUserId);
     }
     state = await scopedStateForAsync(currentUser.id);
+    const audit = auditDescriptor(action);
+    if (audit) {
+      await recordSecurityAuditSafe(
+        currentUser,
+        audit.action,
+        audit.entityType,
+        createdUser?.id ?? audit.entityId,
+        audit.details
+      );
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error("CRM action failed", { actionType: action.type, message, error });
+    if (action.type === "create_user" && /email rate limit/i.test(message)) {
+      return NextResponse.json({ error: "Supabase временно ограничил отправку писем. Подключите собственный SMTP или повторите приглашение позже." }, { status: 429 });
+    }
     return NextResponse.json({ error: `CRM не смогла сохранить действие: ${message}` }, { status: 500 });
   }
   return NextResponse.json({
     currentUser,
     state,
-    metrics: dashboardMetrics(state)
+    metrics: dashboardMetrics(state),
+    auditLog: currentUser.role === "Руководитель" || currentUser.role === "РОП" ? await listSecurityAudit(30) : []
   });
 }
 
 function canRunAction(user: CrmUser, action: CrmAction, state: Awaited<ReturnType<typeof getCrmStateAsync>>) {
+  if (action.type === "disable_user" || action.type === "delete_user") {
+    const target = state.users.find((item) => item.id === action.payload.userId);
+    return user.role === "Руководитель" && Boolean(target) && target?.role !== "Руководитель";
+  }
   if (user.role === "Руководитель") return true;
   if (action.type === "create_user") {
     return user.role === "РОП" && (action.payload.role === "Менеджер" || action.payload.role === "Аккаунт-менеджер");
   }
-  if (action.type === "disable_user" || action.type === "delete_user") return false;
   if (action.type === "create_warmup_step" || action.type === "delete_warmup_step") return user.role === "РОП";
   if (user.role === "РОП") return action.type !== "toggle_integration" && action.type !== "configure_integration";
   if (action.type === "assign_lead" || action.type === "toggle_integration" || action.type === "configure_integration" || action.type === "run_automation") {
     return false;
   }
 
-  if (action.type === "create_lead") return action.payload.ownerId === user.id;
+  if (action.type === "create_lead") return user.role === "Менеджер" && action.payload.ownerId === user.id;
+  if (action.type === "delete_lead") return false;
 
-  const leadId = leadIdFromAction(action);
+  if ((action.type === "record_call" || action.type === "mark_no_answer") && action.payload.ownerId !== user.id) return false;
+
+  const leadId = leadIdFromAction(action, state);
   if (leadId) {
     const lead = state.leads.find((item) => item.id === leadId);
     if (!lead || lead.ownerId !== user.id) return false;
@@ -130,7 +170,7 @@ function canRunAction(user: CrmUser, action: CrmAction, state: Awaited<ReturnTyp
   return true;
 }
 
-function leadIdFromAction(action: CrmAction) {
+function leadIdFromAction(action: CrmAction, state: Awaited<ReturnType<typeof getCrmStateAsync>>) {
   if (
     action.type === "update_lead"
     || action.type === "delete_lead"
@@ -143,6 +183,9 @@ function leadIdFromAction(action: CrmAction) {
     || action.type === "mark_refused"
   ) {
     return action.payload.leadId;
+  }
+  if (action.type === "renew_subscription") {
+    return state.subscriptions.find((item) => item.id === action.payload.subscriptionId)?.leadId ?? null;
   }
   return null;
 }

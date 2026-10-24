@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getSessionUserId } from "@/lib/auth/session";
 import { dashboardMetrics, scopedStateForAsync } from "@/lib/crm/store";
+import { listSecurityAudit } from "@/lib/security/audit";
 
 export async function GET() {
   const userId = await getSessionUserId();
@@ -17,6 +18,7 @@ export async function GET() {
   return NextResponse.json({
     currentUser,
     state,
-    metrics: dashboardMetrics(state)
+    metrics: dashboardMetrics(state),
+    auditLog: currentUser.role === "Руководитель" || currentUser.role === "РОП" ? await listSecurityAudit(30) : []
   });
 }

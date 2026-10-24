@@ -1,8 +1,9 @@
 import { createSeedState } from "./seed";
-import { disableCredential, getCredentialsSnapshot, hydrateCredentialsSnapshot, registerCredential } from "@/lib/auth/credentials";
+import { disableCredential, getCredentialsSnapshot, hydrateCredentialsSnapshot } from "@/lib/auth/credentials";
 import { createServiceSupabaseClient } from "@/lib/supabase/server";
 import { ensureNormalizedCrmState, writeNormalizedCrmState } from "./normalized-store";
-import { STAGES, type CrmAction, type CrmState, type Lead, type LeadTemperature, type LeadUpdate, type Role } from "./types";
+import { migrateLegacyIntegrationSecrets } from "@/lib/integrations/secrets";
+import { STAGES, type CrmAction, type CrmState, type Lead, type LeadTemperature, type LeadUpdate } from "./types";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -133,6 +134,7 @@ export async function getCrmStateAsync(): Promise<CrmState> {
   const storedState = await ensureNormalizedCrmState(createSeedState());
   if (!isCrmState(storedState)) throw new Error("Supabase вернул некорректное состояние CRM.");
   const migrated = migrateState(storedState);
+  if (await migrateLegacyIntegrationSecrets(migrated.state.integrations)) migrated.changed = true;
   globalForCrm.optiCrmState = migrated.state;
   if (migrated.changed) {
     await persistCrmStateAsync(globalForCrm.optiCrmState);
@@ -200,13 +202,13 @@ function scopeState(state: CrmState, userId: string): CrmState {
   if (!user || user.role === "Руководитель" || user.role === "РОП") return state;
   if (user.role === "Менеджер") {
     const allowedLeadIds = new Set(state.leads.filter((lead) => lead.ownerId === user.id).map((lead) => lead.id));
-    return filterStateByLeads(state, allowedLeadIds, user.role);
+    return filterStateByLeads(state, allowedLeadIds, user.id);
   }
   const allowedLeadIds = new Set(state.leads.filter((lead) => lead.ownerId === user.id && lead.status === "client").map((lead) => lead.id));
-  return filterStateByLeads(state, allowedLeadIds, user.role);
+  return filterStateByLeads(state, allowedLeadIds, user.id);
 }
 
-function filterStateByLeads(state: CrmState, leadIds: Set<string>, role: Role): CrmState {
+function filterStateByLeads(state: CrmState, leadIds: Set<string>, userId: string): CrmState {
   return {
     ...state,
     leads: state.leads.filter((lead) => leadIds.has(lead.id)),
@@ -215,7 +217,7 @@ function filterStateByLeads(state: CrmState, leadIds: Set<string>, role: Role): 
     tasks: state.tasks.filter((task) => leadIds.has(task.leadId)),
     activities: state.activities.filter((activity) => leadIds.has(activity.leadId)),
     callRecords: state.callRecords.filter((call) => leadIds.has(call.leadId)),
-    users: role === "Менеджер" || role === "Аккаунт-менеджер" ? state.users.filter((user) => user.role !== "Руководитель") : state.users
+    users: state.users.filter((user) => user.id === userId)
   };
 }
 
@@ -262,6 +264,7 @@ export function applyCrmAction(action: CrmAction): CrmState {
   const state = suppressLocalPersistence && globalForCrm.optiCrmState ? globalForCrm.optiCrmState : getCrmState();
 
   if (action.type === "create_user") {
+    if (!supabasePersistenceEnabled()) throw new Error("Приглашения сотрудников требуют подключенного Supabase Auth.");
     const normalizedEmail = action.payload.email.trim().toLowerCase();
     if (state.users.some((user) => user.email.toLowerCase() === normalizedEmail)) {
       throw new Error("Сотрудник с таким email уже существует.");
@@ -280,12 +283,13 @@ export function applyCrmAction(action: CrmAction): CrmState {
       createdAt: today()
     };
     state.users.unshift(newUser);
-    if (!supabasePersistenceEnabled()) registerCredential(newUser.id, newUser.email, action.payload.password);
   }
 
   if (action.type === "disable_user") {
     const user = state.users.find((item) => item.id === action.payload.userId);
-    const fallback = state.users.find((item) => item.role === "Менеджер" && item.status === "active" && item.id !== user?.id);
+    const fallback = state.users.find((item) => item.role === user?.role && item.status === "active" && item.id !== user?.id)
+      ?? state.users.find((item) => item.role === "РОП" && item.status === "active" && item.id !== user?.id)
+      ?? state.users.find((item) => item.role === "Руководитель" && item.status === "active" && item.id !== user?.id);
     if (user && user.role !== "Руководитель") {
       user.status = "disabled";
       if (!supabasePersistenceEnabled()) disableCredential(user.email);
@@ -294,6 +298,7 @@ export function applyCrmAction(action: CrmAction): CrmState {
           lead.ownerId = fallback.id;
           addActivity(state, lead.id, "system", "Ответственный изменен", `Аккаунт ${user.fullName} отключен, сделка передана ${fallback.fullName}.`);
         });
+        state.tasks.filter((task) => task.ownerId === user.id && task.status === "open").forEach((task) => { task.ownerId = fallback.id; });
       }
     }
   }
@@ -307,8 +312,12 @@ export function applyCrmAction(action: CrmAction): CrmState {
         lead.ownerId = fallback?.id ?? "";
         addActivity(state, lead.id, "system", "Ответственный удален", fallback ? `Аккаунт ${user.fullName} удален, сделка передана ${fallback.fullName}.` : `Аккаунт ${user.fullName} удален.`);
       });
-      state.tasks = state.tasks.filter((task) => task.ownerId !== user.id);
-      state.callRecords = state.callRecords.filter((call) => call.ownerId !== user.id);
+      if (fallback) {
+        state.tasks.filter((task) => task.ownerId === user.id && task.status === "open").forEach((task) => { task.ownerId = fallback.id; });
+      } else {
+        state.tasks = state.tasks.filter((task) => task.ownerId !== user.id);
+      }
+      state.callRecords.filter((call) => call.ownerId === user.id).forEach((call) => { call.ownerId = fallback?.id ?? ""; });
       state.users = state.users.filter((item) => item.id !== user.id);
       if (!supabasePersistenceEnabled()) disableCredential(user.email);
     }
@@ -564,7 +573,7 @@ export function applyCrmAction(action: CrmAction): CrmState {
   if (action.type === "configure_integration") {
     const integration = state.integrations.find((item) => item.id === action.payload.integrationId);
     if (integration) {
-      integration.config = action.payload.config;
+      delete integration.config;
       integration.status = "connected";
       integration.updatedAt = today();
     }
