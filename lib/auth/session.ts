@@ -53,12 +53,20 @@ export async function setSession(userId: string) {
 }
 
 export async function clearSession() {
-  if (supabaseAuthEnabled()) {
-    const supabase = await createServerAuthClient();
-    await supabase.auth.signOut({ scope: "local" });
+  try {
+    if (supabaseAuthEnabled()) {
+      const supabase = await createServerAuthClient();
+      const { error } = await supabase.auth.signOut({ scope: "local" });
+      if (error) console.error("Supabase sign out failed", { message: error.message });
+    }
+  } catch (error) {
+    console.error("Supabase sign out failed", {
+      message: error instanceof Error ? error.message : String(error)
+    });
+  } finally {
+    const cookieStore = await cookies();
+    cookieStore.delete(SESSION_COOKIE);
   }
-  const cookieStore = await cookies();
-  cookieStore.delete(SESSION_COOKIE);
 }
 
 export async function getSessionUserId() {

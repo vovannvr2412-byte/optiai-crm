@@ -113,6 +113,24 @@ textarea:focus-visible {
 .crm-nav-item:hover { color: #fff; background: rgb(255 255 255 / 0.06); }
 .crm-nav-item-active { color: #fff; background: rgb(83 109 254 / 0.2); box-shadow: inset 2px 0 0 var(--accent); }
 
+.crm-nav {
+  display: grid;
+  min-height: 0;
+  flex: 1 1 auto;
+  align-content: start;
+  gap: 8px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 2px;
+}
+
+.crm-account-footer {
+  flex: 0 0 auto;
+  padding-top: 12px;
+  border-top: 1px solid rgb(255 255 255 / 0.1);
+  background: var(--sidebar);
+}
+
 .crm-logout {
   display: flex;
   min-height: 40px;
@@ -132,6 +150,7 @@ textarea:focus-visible {
 }
 
 .crm-logout:hover { border-color: rgb(255 255 255 / 0.22); background: rgb(255 255 255 / 0.1); }
+.crm-logout:disabled { opacity: 0.7; }
 
 .crm-main { min-width: 0; padding: 0 28px 32px; }
 

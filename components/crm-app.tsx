@@ -150,6 +150,7 @@ export function CrmApp() {
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [toast, setToast] = useState("");
   const [loadingAction, setLoadingAction] = useState(false);
+  const [loggingOut, setLoggingOut] = useState(false);
   const [draggingLeadId, setDraggingLeadId] = useState("");
   const [dropStage, setDropStage] = useState<number | null>(null);
   const [movingLeadIds, setMovingLeadIds] = useState<Set<string>>(() => new Set());
@@ -224,6 +225,24 @@ export function CrmApp() {
     }
     const permission = await Notification.requestPermission();
     setToast(permission === "granted" ? "Системные уведомления включены." : "Браузер не разрешил уведомления.");
+  }
+
+  async function logout() {
+    if (loggingOut) return;
+    setLoggingOut(true);
+    setNotificationsOpen(false);
+    try {
+      const response = await fetch("/api/auth/logout", { method: "POST" });
+      if (!response.ok) {
+        const data = (await response.json().catch(() => null)) as { error?: string } | null;
+        throw new Error(data?.error ?? "Не удалось завершить сессию.");
+      }
+      window.sessionStorage.removeItem("optiai:selectedLeadId");
+      window.location.assign("/");
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : "Не удалось выйти из аккаунта.");
+      setLoggingOut(false);
+    }
   }
 
   async function runAction(action: CrmAction, message: string) {
@@ -505,7 +524,7 @@ export function CrmApp() {
           </div>
         </div>
 
-        <nav className="grid gap-2">
+        <nav className="crm-nav" aria-label="Основная навигация">
           {navItems
             .filter((item) => allowedViews.includes(item.id))
             .map(({ id, icon: Icon }) => (
@@ -524,29 +543,30 @@ export function CrmApp() {
             ))}
         </nav>
 
-        <div className="mt-auto border-t border-white/10 pt-4 max-lg:hidden">
-          <span className="text-xs text-slate-400">Текущий аккаунт</span>
-          <strong className="mt-1 block truncate text-sm text-white">{currentUser.fullName}</strong>
-          <span className="block truncate text-xs text-slate-400">{currentUser.email}</span>
-          <span className="mt-2 inline-flex rounded-md bg-white/10 px-2 py-1 text-xs font-semibold text-slate-200">{currentUser.role}</span>
-          <p className="mt-3 text-xs leading-5 text-slate-400">{roleDescriptions[currentUser.role]}</p>
-          <button onClick={() => setModal("password")} className="mt-3 flex items-center gap-2 text-xs font-semibold text-slate-200 hover:text-white">
-            <KeyRound size={14} /> Сменить пароль
+        <div className="crm-account-footer">
+          <div className="max-lg:hidden">
+            <span className="text-xs text-slate-400">Текущий аккаунт</span>
+            <strong className="mt-1 block truncate text-sm text-white">{currentUser.fullName}</strong>
+            <span className="block truncate text-xs text-slate-400">{currentUser.email}</span>
+            <span className="mt-2 inline-flex rounded-md bg-white/10 px-2 py-1 text-xs font-semibold text-slate-200">{currentUser.role}</span>
+            <p className="mt-3 text-xs leading-5 text-slate-400">{roleDescriptions[currentUser.role]}</p>
+            <button onClick={() => setModal("password")} className="mt-3 flex items-center gap-2 text-xs font-semibold text-slate-200 hover:text-white">
+              <KeyRound size={14} /> Сменить пароль
+            </button>
+          </div>
+          <button onClick={() => setModal("password")} className="crm-logout lg:hidden" aria-label="Сменить пароль">
+            <KeyRound size={17} /> <span>Пароль</span>
+          </button>
+          <button
+            type="button"
+            aria-label="Выйти из аккаунта"
+            onClick={() => void logout()}
+            disabled={loggingOut}
+            className="crm-logout"
+          >
+            <LogOut size={17} /> <span>{loggingOut ? "Выходим..." : "Выйти"}</span>
           </button>
         </div>
-        <button onClick={() => setModal("password")} className="crm-logout lg:hidden" aria-label="Сменить пароль">
-          <KeyRound size={17} /> <span>Пароль</span>
-        </button>
-        <button
-          aria-label="Выйти из аккаунта"
-          onClick={async () => {
-            await fetch("/api/auth/logout", { method: "POST" });
-            setBootstrap(null);
-          }}
-          className="crm-logout"
-        >
-          <LogOut size={17} /> <span>Выйти</span>
-        </button>
       </aside>
 
       <main className="crm-main">
@@ -1285,15 +1305,20 @@ function LoginScreen({ onLogin }: { onLogin: () => Promise<boolean> }) {
     setSubmitting(true);
     setError("");
     setNotice("");
-    const response = await fetch("/api/auth/password-reset/request", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email })
-    });
-    const data = (await response.json().catch(() => null)) as { error?: string; message?: string } | null;
-    if (!response.ok) setError(data?.error ?? "Не удалось отправить письмо.");
-    else setNotice(data?.message ?? "Проверьте почту.");
-    setSubmitting(false);
+    try {
+      const response = await fetch("/api/auth/password-reset/request", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email })
+      });
+      const data = (await response.json().catch(() => null)) as { error?: string; message?: string } | null;
+      if (!response.ok) setError(data?.error ?? "Не удалось отправить письмо.");
+      else setNotice(data?.message ?? "Проверьте почту и папку «Спам».");
+    } catch {
+      setError("Сервер недоступен. Попробуйте отправить ссылку позже.");
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   return (
@@ -1311,7 +1336,7 @@ function LoginScreen({ onLogin }: { onLogin: () => Promise<boolean> }) {
         <form onSubmit={resetMode ? (event) => { event.preventDefault(); void requestReset(); } : submit} className="grid content-center gap-5 p-10 max-md:p-6">
           <div>
             <h2 className="text-2xl font-bold text-[#202939]">{resetMode ? "Восстановление пароля" : "Вход в CRM"}</h2>
-            <p className="mt-2 text-sm text-slate-600">{resetMode ? "Укажите рабочий email. Supabase отправит защищенную ссылку." : "Введите рабочий email и пароль."}</p>
+            <p className="mt-2 text-sm text-slate-600">{resetMode ? "Укажите рабочий email. Ссылка для нового пароля придет на почту." : "Введите рабочий email и пароль."}</p>
           </div>
           <label className="ui-label">
             Email

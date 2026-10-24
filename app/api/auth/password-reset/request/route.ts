@@ -25,7 +25,17 @@ export async function POST(request: Request) {
     const { error } = await auth.auth.resetPasswordForEmail(normalizedEmail, {
       redirectTo: passwordSetupUrl(request)
     });
-    if (error) console.error("Password reset request failed", { message: error.message });
+    if (error) {
+      console.error("Password reset request failed", { message: error.message, code: error.code, status: error.status });
+      if (error.status === 429 || error.code === "over_email_send_rate_limit") {
+        return NextResponse.json({
+          error: "Supabase временно ограничил отправку писем. Подождите несколько минут и попробуйте снова. Для постоянной работы подключите SMTP в Supabase."
+        }, { status: 429 });
+      }
+      return NextResponse.json({
+        error: "Письмо не отправлено. Проверьте настройки SMTP и адрес сайта в Supabase Auth."
+      }, { status: 502 });
+    }
   }
-  return NextResponse.json({ message: genericMessage });
+  return NextResponse.json({ message: `${genericMessage} Проверьте также папку «Спам».` });
 }
