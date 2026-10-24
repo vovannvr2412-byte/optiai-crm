@@ -4,9 +4,11 @@ export type LeadTemperature = "hot" | "warm" | "cold";
 export type LeadStatus = "sales" | "warmup" | "client" | "lost";
 export type IntegrationStatus = "connected" | "needs_setup" | "error";
 export type TaskPriority = "high" | "medium" | "low";
+export type ManualCallResult = "answered" | "no_answer" | "meeting" | "comment";
 
 export type ViewId =
   | "dashboard"
+  | "tasks"
   | "pipeline"
   | "messengers"
   | "lead"
@@ -101,7 +103,7 @@ export type CrmTask = {
   title: string;
   dueAt: string;
   priority: TaskPriority;
-  status: "open" | "done";
+  status: "open" | "done" | "cancelled";
   automationKey?: string;
 };
 
@@ -176,6 +178,9 @@ export type CrmAction =
   | { type: "create_user"; payload: Pick<CrmUser, "fullName" | "email" | "role" | "position"> }
   | { type: "disable_user"; payload: { userId: string } }
   | { type: "delete_user"; payload: { userId: string } }
+  | { type: "complete_task"; payload: { taskId: string } }
+  | { type: "reschedule_task"; payload: { taskId: string; dueAt: string } }
+  | { type: "cancel_task"; payload: { taskId: string } }
   | { type: "create_lead"; payload: Omit<Lead, "id" | "stage" | "status" | "score" | "temperature" | "createdAt"> }
   | { type: "update_lead"; payload: { leadId: string; changes: LeadUpdate } }
   | { type: "delete_lead"; payload: { leadId: string } }
@@ -183,6 +188,7 @@ export type CrmAction =
   | { type: "assign_lead"; payload: { leadId: string; ownerId: string } }
   | { type: "record_call"; payload: { leadId: string; ownerId: string } }
   | { type: "mark_no_answer"; payload: { leadId: string; ownerId: string } }
+  | { type: "record_call_result"; payload: { leadId: string; ownerId: string; result: ManualCallResult; comment?: string } }
   | { type: "send_message"; payload: { leadId: string; channel: string; text: string } }
   | { type: "start_warmup"; payload: { leadId: string; sequenceId: string } }
   | { type: "create_warmup_step"; payload: { sequenceId: string; day: number; title: string; message: string; attachmentUrl?: string; attachmentType?: "image" | "video"; attachmentName?: string } }
@@ -211,14 +217,15 @@ export const STAGES = [
 ] as const;
 
 export const ROLE_PERMISSIONS: Record<Role, ViewId[]> = {
-  Руководитель: ["dashboard", "pipeline", "messengers", "lead", "callcenter", "warmup", "subscriptions", "team", "automations"],
-  РОП: ["dashboard", "pipeline", "messengers", "lead", "callcenter", "warmup", "subscriptions", "team"],
-  Менеджер: ["pipeline", "messengers", "lead", "callcenter", "warmup"],
-  "Аккаунт-менеджер": ["dashboard", "messengers", "lead", "callcenter", "subscriptions"]
+  Руководитель: ["dashboard", "tasks", "pipeline", "messengers", "lead", "callcenter", "warmup", "subscriptions", "team", "automations"],
+  РОП: ["dashboard", "tasks", "pipeline", "messengers", "lead", "callcenter", "warmup", "subscriptions", "team"],
+  Менеджер: ["tasks", "pipeline", "messengers", "lead", "callcenter", "warmup"],
+  "Аккаунт-менеджер": ["dashboard", "tasks", "messengers", "lead", "callcenter", "subscriptions"]
 };
 
 export const VIEW_TITLES: Record<ViewId, string> = {
   dashboard: "Дашборд",
+  tasks: "Задачи",
   pipeline: "Воронка",
   messengers: "Мессенджеры",
   lead: "Карточка",

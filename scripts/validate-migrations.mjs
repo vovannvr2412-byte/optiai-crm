@@ -32,6 +32,7 @@ const messaging = await sql("supabase/migrations/0002_messaging_center.sql");
 const media = await sql("supabase/migrations/0003_media_storage.sql");
 const normalized = await sql("supabase/migrations/0004_normalized_crm_and_auth.sql");
 const security = await sql("supabase/migrations/0005_single_company_security.sql");
+const automations = await sql("supabase/migrations/0006_tasks_and_automations.sql");
 const seed = await sql("supabase/seed.sql");
 
 await db.exec(initial);
@@ -45,6 +46,39 @@ await db.exec(normalized);
 await db.exec(normalized);
 await db.exec(security);
 await db.exec(security);
+
+await db.exec(`
+  insert into public.crm_users (id, full_name, email, role, position)
+  values ('80000000-0000-0000-0000-000000000001', 'Legacy Owner', 'legacy@example.com', 'Руководитель', 'CEO');
+  insert into public.companies (id, name)
+  values ('81000000-0000-0000-0000-000000000001', 'Legacy Company');
+  insert into public.leads (id, company_id, owner_id, stage_order, status, source_channel)
+  values ('82000000-0000-0000-0000-000000000001', '81000000-0000-0000-0000-000000000001', '80000000-0000-0000-0000-000000000001', 0, 'sales', 'legacy-test');
+  insert into public.warmup_sequences (id, name)
+  values ('83000000-0000-0000-0000-000000000001', 'Legacy Warmup');
+  insert into public.warmup_assignments (id, lead_id, sequence_id, assigned_by, status, created_at) values
+    ('84000000-0000-0000-0000-000000000001', '82000000-0000-0000-0000-000000000001', '83000000-0000-0000-0000-000000000001', '80000000-0000-0000-0000-000000000001', 'active', '2026-01-01T00:00:00Z'),
+    ('84000000-0000-0000-0000-000000000002', '82000000-0000-0000-0000-000000000001', '83000000-0000-0000-0000-000000000001', '80000000-0000-0000-0000-000000000001', 'active', '2026-01-02T00:00:00Z');
+`);
+
+await db.exec(automations);
+await db.exec(automations);
+
+const upgradedAssignments = await db.query(`
+  select id, status, started_at::text as started_at
+  from public.warmup_assignments
+  where lead_id = '82000000-0000-0000-0000-000000000001'
+  order by created_at
+`);
+assert.deepEqual(upgradedAssignments.rows, [
+  { id: "84000000-0000-0000-0000-000000000001", status: "paused", started_at: "2026-01-01" },
+  { id: "84000000-0000-0000-0000-000000000002", status: "active", started_at: "2026-01-02" }
+]);
+await db.exec(`
+  delete from public.companies where id = '81000000-0000-0000-0000-000000000001';
+  delete from public.crm_users where id = '80000000-0000-0000-0000-000000000001';
+  delete from public.warmup_sequences where id = '83000000-0000-0000-0000-000000000001';
+`);
 
 const userId = "20000000-0000-0000-0000-000000000001";
 const tariffId = "10000000-0000-0000-0000-000000000001";
@@ -105,6 +139,38 @@ const policyNames = new Set(securityPolicies.rows.map((row) => row.policyname));
 assert(policyNames.has("role based lead read"));
 assert(policyNames.has("users read own profile"));
 assert(policyNames.has("management reads security audit"));
+assert(policyNames.has("users read own notifications"));
+assert(policyNames.has("management reads automation events"));
 
-console.log("Migrations OK: schema is repeatable, RLS policies exist, and normalized CRM state round-trips correctly.");
+await db.query("update public.tasks set status = 'cancelled' where id = $1", [state.tasks[0].id]);
+const cancelledTask = await db.query("select status from public.tasks where id = $1", [state.tasks[0].id]);
+assert.equal(cancelledTask.rows[0].status, "cancelled");
+const automationTables = await db.query("select table_name from information_schema.tables where table_schema = 'public' and table_name in ('crm_notifications', 'automation_events', 'automation_runs')");
+assert.equal(automationTables.rows.length, 3);
+
+const eventArguments = [
+  "migration-test:event-1",
+  "migration_test",
+  "2026-01-01T06:00:00Z",
+  leadId,
+  userId,
+  state.tasks[0].id,
+  JSON.stringify({ source: "migration-test" })
+];
+const claimSql = "select * from public.claim_automation_event($1, $2, $3::timestamptz, $4::uuid, $5::uuid, $6::uuid, $7::jsonb)";
+const firstClaim = await db.query(claimSql, eventArguments);
+const duplicateClaim = await db.query(claimSql, eventArguments);
+assert.equal(firstClaim.rows.length, 1);
+assert.equal(firstClaim.rows[0].attempts, 1);
+assert.equal(duplicateClaim.rows.length, 0);
+
+await db.query("update public.automation_events set status = 'failed', next_attempt_at = now() - interval '1 minute' where event_key = $1", [eventArguments[0]]);
+const retryClaim = await db.query(claimSql, eventArguments);
+assert.equal(retryClaim.rows.length, 1);
+assert.equal(retryClaim.rows[0].attempts, 2);
+await db.query("update public.automation_events set status = 'completed', processed_at = now() where event_key = $1", [eventArguments[0]]);
+const completedClaim = await db.query(claimSql, eventArguments);
+assert.equal(completedClaim.rows.length, 0);
+
+console.log("Migrations OK: schema is repeatable, legacy warmups are repaired, scheduler events are idempotent, RLS policies exist, task statuses work, and normalized CRM state round-trips correctly.");
 await db.close();

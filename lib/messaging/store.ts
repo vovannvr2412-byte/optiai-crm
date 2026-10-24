@@ -248,6 +248,54 @@ export async function createPendingMessage(userId: string, conversationId: strin
   return toMessage(data);
 }
 
+export async function createPendingMessageOnce(userId: string, conversationId: string, text: string, idempotencyKey: string, attachment?: OutgoingMediaAttachment) {
+  const [conversation, { user }] = await Promise.all([getConversationForUser(userId, conversationId), accessContext(userId)]);
+  const now = new Date().toISOString();
+  const message: MessengerMessage = {
+    id: randomUUID(), conversationId, connectionId: conversation.connectionId, channel: conversation.channel,
+    idempotencyKey, direction: "outbound", senderName: user.fullName, senderExternalId: user.id,
+    text: text.trim(), sentAt: now, status: "pending", contentType: attachment?.type ?? "text", attachments: attachment ? [attachment] : [], metadata: { automated: true }
+  };
+  if (!message.text && !attachment) throw new Error("Автоматическое сообщение не содержит текста или вложения.");
+  if (message.text.length > 4000) throw new Error("Автоматическое сообщение превышает 4000 символов.");
+
+  if (!supabasePersistenceEnabled()) {
+    return mutateLocal((snapshot) => {
+      const existing = snapshot.messages.find((item) => item.idempotencyKey === idempotencyKey);
+      if (existing) return { message: structuredClone(existing), created: false };
+      snapshot.messages.push(message);
+      const item = snapshot.conversations.find((entry) => entry.id === conversationId);
+      if (item) { item.lastMessageText = message.text || (attachment?.type === "image" ? "Фото" : "Видео"); item.lastMessageAt = now; item.updatedAt = now; }
+      return { message: structuredClone(message), created: true };
+    });
+  }
+
+  const supabase = createServiceSupabaseClient();
+  const { data, error } = await supabase.from("messenger_messages").insert({
+    id: message.id, conversation_id: message.conversationId, connection_id: message.connectionId, channel: message.channel,
+    idempotency_key: message.idempotencyKey, direction: message.direction, sender_name: message.senderName,
+    sender_external_id: message.senderExternalId, text: message.text, sent_at: message.sentAt, status: message.status,
+    content_type: message.contentType, attachments: message.attachments, metadata: message.metadata
+  }).select("*").single();
+  if (error) {
+    if (error.code !== "23505") throw error;
+    const { data: existing, error: existingError } = await supabase
+      .from("messenger_messages")
+      .select("*")
+      .eq("idempotency_key", idempotencyKey)
+      .single();
+    if (existingError) throw existingError;
+    return { message: toMessage(existing), created: false };
+  }
+  const { error: conversationError } = await supabase.from("messenger_conversations").update({
+    last_message_text: message.text || (attachment?.type === "image" ? "Фото" : "Видео"),
+    last_message_at: now,
+    updated_at: now
+  }).eq("id", conversationId);
+  if (conversationError) throw conversationError;
+  return { message: toMessage(data), created: true };
+}
+
 export async function finishOutgoingMessage(messageId: string, result: { status: MessageDeliveryStatus; externalMessageId?: string; errorReason?: string }) {
   const errorReason = result.errorReason ? safeProviderError(result.errorReason) : undefined;
   if (!supabasePersistenceEnabled()) {

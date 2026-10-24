@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { getSessionUserId } from "@/lib/auth/session";
 import { dashboardMetrics, scopedStateForAsync } from "@/lib/crm/store";
 import { listSecurityAudit } from "@/lib/security/audit";
+import { listNotificationsForUser } from "@/lib/notifications/store";
+import { getAutomationStatus } from "@/lib/automations/scheduler";
 
 export async function GET() {
   const userId = await getSessionUserId();
@@ -19,6 +21,8 @@ export async function GET() {
     currentUser,
     state,
     metrics: dashboardMetrics(state),
+    notifications: await listNotificationsForUser(currentUser.id),
+    automationStatus: await getAutomationStatus(),
     auditLog: currentUser.role === "Руководитель" || currentUser.role === "РОП" ? await listSecurityAudit(30) : []
   });
 }

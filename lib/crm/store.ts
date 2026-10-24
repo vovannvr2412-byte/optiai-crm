@@ -3,7 +3,7 @@ import { disableCredential, getCredentialsSnapshot, hydrateCredentialsSnapshot }
 import { createServiceSupabaseClient } from "@/lib/supabase/server";
 import { ensureNormalizedCrmState, writeNormalizedCrmState } from "./normalized-store";
 import { migrateLegacyIntegrationSecrets } from "@/lib/integrations/secrets";
-import { STAGES, type CrmAction, type CrmState, type Lead, type LeadTemperature, type LeadUpdate } from "./types";
+import { STAGES, type CrmAction, type CrmState, type Lead, type LeadTemperature, type LeadUpdate, type ManualCallResult } from "./types";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -242,8 +242,64 @@ function scheduleNoAnswerFollowUps(state: CrmState, lead: Lead, ownerId: string)
   });
 }
 
+function recordManualCallResult(
+  state: CrmState,
+  payload: { leadId: string; ownerId: string; result: ManualCallResult; comment?: string }
+) {
+  const lead = state.leads.find((item) => item.id === payload.leadId);
+  const caller = state.users.find((item) => item.id === payload.ownerId && item.status === "active");
+  if (!lead || !caller) throw new Error("Лид или сотрудник не найден.");
+
+  const comment = payload.comment?.trim() ?? "";
+  if (payload.result === "comment") {
+    if (!comment) throw new Error("Добавьте комментарий к звонку.");
+    addActivity(state, lead.id, "call", "Комментарий к звонку", comment);
+    return;
+  }
+
+  caller.calls += 1;
+  lead.lastContactAt = today();
+
+  if (payload.result === "no_answer") {
+    lead.stage = 3;
+    lead.status = "sales";
+    lead.nextStep = "Перезвонить по плану 1/3/7 дней";
+    addActivity(
+      state,
+      lead.id,
+      "call",
+      "Не дозвонились",
+      comment || "CRM поставила ответственному задачи на повторный звонок через 1, 3 и 7 дней."
+    );
+    scheduleNoAnswerFollowUps(state, lead, lead.ownerId);
+    return;
+  }
+
+  lead.stage = Math.max(lead.stage, 4);
+  lead.status = leadStatusForStage(lead.stage);
+  lead.score = Math.min(100, scoreLead(lead) + 10);
+  lead.temperature = temperature(lead.score);
+
+  if (payload.result === "meeting") {
+    caller.meetings += 1;
+    lead.nextStep = "Подготовиться к назначенной встрече";
+    addActivity(state, lead.id, "call", "Назначена встреча", comment || "Менеджер договорился о встрече с клиентом.");
+    addTask(state, lead.id, lead.ownerId, "Подготовиться к встрече с клиентом", 1, "high");
+    return;
+  }
+
+  lead.nextStep = "Отправить SEO + GEO аудит и релевантный кейс";
+  addActivity(state, lead.id, "call", "Дозвонились", comment || "Разговор состоялся, результат зафиксирован менеджером вручную.");
+  addTask(state, lead.id, lead.ownerId, "Отправить аудит после звонка", 0, "high");
+}
+
 function dateLabelForTask(daysFromNow: number) {
   return new Intl.DateTimeFormat("ru-RU", { day: "2-digit", month: "long", year: "numeric" }).format(new Date(dateOnly(daysFromNow)));
+}
+
+function dateLabelForTaskDate(value: string) {
+  return new Intl.DateTimeFormat("ru-RU", { day: "2-digit", month: "long", year: "numeric", timeZone: "UTC" })
+    .format(new Date(`${value}T00:00:00Z`));
 }
 
 function leadStatusForStage(stage: number): Lead["status"] {
@@ -262,6 +318,30 @@ const editableLeadFields: (keyof LeadUpdate)[] = [
 
 export function applyCrmAction(action: CrmAction): CrmState {
   const state = suppressLocalPersistence && globalForCrm.optiCrmState ? globalForCrm.optiCrmState : getCrmState();
+
+  if (action.type === "complete_task" || action.type === "cancel_task" || action.type === "reschedule_task") {
+    const task = state.tasks.find((item) => item.id === action.payload.taskId);
+    if (!task) throw new Error("Задача не найдена.");
+    const lead = state.leads.find((item) => item.id === task.leadId);
+    if (action.type === "complete_task") {
+      task.status = "done";
+      if (lead) addActivity(state, lead.id, "task", "Задача выполнена", task.title);
+    }
+    if (action.type === "cancel_task") {
+      task.status = "cancelled";
+      if (lead) addActivity(state, lead.id, "task", "Задача отменена", task.title);
+    }
+    if (action.type === "reschedule_task") {
+      const dueAt = action.payload.dueAt.trim();
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(dueAt) || Number.isNaN(Date.parse(`${dueAt}T00:00:00Z`))) {
+        throw new Error("Укажите корректную дату задачи.");
+      }
+      if (dueAt < dateOnly()) throw new Error("Задачу нельзя перенести в прошлое.");
+      task.dueAt = dueAt;
+      task.status = "open";
+      if (lead) addActivity(state, lead.id, "task", "Задача перенесена", `${task.title}: ${dateLabelForTaskDate(dueAt)}.`);
+    }
+  }
 
   if (action.type === "create_user") {
     if (!supabasePersistenceEnabled()) throw new Error("Приглашения сотрудников требуют подключенного Supabase Auth.");
@@ -424,47 +504,15 @@ export function applyCrmAction(action: CrmAction): CrmState {
   }
 
   if (action.type === "record_call") {
-    const lead = state.leads.find((item) => item.id === action.payload.leadId);
-    const owner = state.users.find((item) => item.id === action.payload.ownerId);
-    if (lead && owner) {
-      owner.calls += 1;
-      lead.stage = Math.max(lead.stage, 4);
-      lead.lastContactAt = today();
-      lead.score = Math.min(100, scoreLead(lead) + 10);
-      lead.temperature = temperature(lead.score);
-      lead.nextStep = "Отправить SEO + GEO аудит и релевантный кейс";
-      const call = {
-        id: id(),
-        leadId: lead.id,
-        ownerId: owner.id,
-        recordingUrl: "/recordings/demo-call.mp3",
-        transcript: `Клиент ${lead.companyName} подтвердил боль: ${lead.pain}. Обсудили каналы: ${lead.currentPromotionChannels}. Бюджет: ${lead.budget}.`,
-        summary: `AI заполнил карточку: боль "${lead.pain}", бюджет ${lead.budget}, следующий шаг: ${lead.nextStep}.`,
-        objections: ["Нужно доказать окупаемость", "Нужен пример из похожей ниши"],
-        nextSteps: ["Отправить аудит", "Назначить follow-up", "Запустить прогрев"],
-        interest: Math.min(100, lead.score + 4),
-        dealProbability: Math.min(95, lead.score),
-        managerMistakes: ["Нужно закрепить точную дату следующего касания"],
-        createdAt: today()
-      };
-      state.callRecords.unshift(call);
-      addActivity(state, lead.id, "call", "Звонок записан", call.summary);
-      addTask(state, lead.id, lead.ownerId, "Отправить аудит после звонка", 0, "high");
-    }
+    recordManualCallResult(state, { ...action.payload, result: "answered" });
   }
 
   if (action.type === "mark_no_answer") {
-    const lead = state.leads.find((item) => item.id === action.payload.leadId);
-    const owner = state.users.find((item) => item.id === action.payload.ownerId) ?? state.users.find((item) => item.id === lead?.ownerId);
-    if (lead && owner) {
-      lead.ownerId = owner.id;
-      lead.stage = 3;
-      lead.status = "sales";
-      lead.lastContactAt = today();
-      lead.nextStep = "Перезвонить по плану 1/3/7 дней";
-      addActivity(state, lead.id, "call", "Не дозвонились", "CRM запустила автоматические задачи и уведомления на 1, 3 и 7 дней.");
-      scheduleNoAnswerFollowUps(state, lead, owner.id);
-    }
+    recordManualCallResult(state, { ...action.payload, result: "no_answer" });
+  }
+
+  if (action.type === "record_call_result") {
+    recordManualCallResult(state, action.payload);
   }
 
   if (action.type === "send_message") {

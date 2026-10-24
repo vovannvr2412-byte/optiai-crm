@@ -3,19 +3,25 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import {
+  Bell,
   Bot,
   BriefcaseBusiness,
+  CalendarCheck2,
   CalendarClock,
   CheckCircle2,
+  CheckSquare2,
+  Clock3,
   Flame,
   Film,
   ImageIcon,
   KeyRound,
   LayoutDashboard,
   LogOut,
+  MessageSquareText,
   MessagesSquare,
   Pencil,
   PhoneCall,
+  PhoneOff,
   Plus,
   Search,
   ShieldCheck,
@@ -23,11 +29,13 @@ import {
   UsersRound,
   X
 } from "lucide-react";
-import { ROLE_PERMISSIONS, STAGES, VIEW_TITLES, type CrmAction, type CrmState, type CrmUser, type Lead, type Role, type ViewId } from "@/lib/crm/types";
+import { ROLE_PERMISSIONS, STAGES, VIEW_TITLES, type CrmAction, type CrmState, type CrmUser, type Lead, type ManualCallResult, type Role, type ViewId } from "@/lib/crm/types";
 import { MessengerCenter } from "@/components/messenger-center";
 import type { MessengerConnection } from "@/lib/messaging/types";
 import { uploadMediaFile } from "@/lib/media/client";
 import { AccountPasswordForm } from "@/components/account-password-form";
+import type { CrmNotification } from "@/lib/notifications/store";
+import type { AutomationStatus } from "@/lib/automations/scheduler";
 
 type Metrics = {
   leads: number;
@@ -44,6 +52,8 @@ type Bootstrap = {
   currentUser: CrmUser;
   state: CrmState;
   metrics: Metrics;
+  notifications?: CrmNotification[];
+  automationStatus?: AutomationStatus;
   auditLog?: {
     id: number;
     actorEmail: string;
@@ -62,6 +72,10 @@ const auditActionLabels: Record<string, string> = {
   "user.invited": "Сотрудник приглашен",
   "user.disabled": "Аккаунт отключен",
   "user.deleted": "Аккаунт удален",
+  "task.completed": "Задача выполнена",
+  "task.rescheduled": "Задача перенесена",
+  "task.cancelled": "Задача отменена",
+  "call.result_recorded": "Результат звонка сохранён",
   "lead.assigned": "Лид переназначен",
   "lead.deleted": "Лид удален",
   "integration.configured": "Интеграция настроена",
@@ -71,10 +85,11 @@ const auditActionLabels: Record<string, string> = {
   "messenger.connection_checked": "Подключение мессенджера проверено"
 };
 
-type Modal = "newUser" | "newLead" | "editLead" | "deleteLead" | "warmupStep" | "refusal" | "integration" | "password" | null;
+type Modal = "newUser" | "newLead" | "editLead" | "deleteLead" | "warmupStep" | "refusal" | "integration" | "password" | "rescheduleTask" | "callResult" | null;
 
 const navItems: { id: ViewId; icon: typeof LayoutDashboard }[] = [
   { id: "dashboard", icon: LayoutDashboard },
+  { id: "tasks", icon: CheckSquare2 },
   { id: "pipeline", icon: BriefcaseBusiness },
   { id: "messengers", icon: MessagesSquare },
   { id: "lead", icon: ShieldCheck },
@@ -130,12 +145,16 @@ export function CrmApp() {
   const [temperature, setTemperature] = useState<"all" | "hot" | "warm" | "cold">("all");
   const [modal, setModal] = useState<Modal>(null);
   const [selectedIntegrationId, setSelectedIntegrationId] = useState("");
+  const [selectedTaskId, setSelectedTaskId] = useState("");
+  const [taskFilter, setTaskFilter] = useState<"open" | "done" | "cancelled">("open");
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [toast, setToast] = useState("");
   const [loadingAction, setLoadingAction] = useState(false);
   const [draggingLeadId, setDraggingLeadId] = useState("");
   const [dropStage, setDropStage] = useState<number | null>(null);
   const [movingLeadIds, setMovingLeadIds] = useState<Set<string>>(() => new Set());
   const suppressLeadClickRef = useRef("");
+  const browserNotifiedRef = useRef(new Set<string>());
 
   const load = useCallback(async () => {
     const response = await fetch("/api/crm/bootstrap", { cache: "no-store" });
@@ -163,6 +182,49 @@ export function CrmApp() {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void load();
   }, [load]);
+
+  const signedInUserId = bootstrap?.currentUser.id;
+
+  useEffect(() => {
+    if (!signedInUserId) return;
+    const syncNotifications = async () => {
+      const response = await fetch("/api/notifications", { cache: "no-store" });
+      if (!response.ok) return;
+      const data = (await response.json()) as { notifications: CrmNotification[] };
+      setBootstrap((current) => current ? { ...current, notifications: data.notifications } : current);
+    };
+    const timer = window.setInterval(() => void syncNotifications(), 60_000);
+    return () => window.clearInterval(timer);
+  }, [signedInUserId]);
+
+  useEffect(() => {
+    if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
+    for (const notification of bootstrap?.notifications ?? []) {
+      if (notification.readAt || browserNotifiedRef.current.has(notification.id)) continue;
+      browserNotifiedRef.current.add(notification.id);
+      new Notification(notification.title, { body: notification.body, tag: notification.eventKey });
+    }
+  }, [bootstrap?.notifications]);
+
+  async function markNotification(notificationId?: string) {
+    const response = await fetch("/api/notifications", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(notificationId ? { notificationId } : { all: true })
+    });
+    if (!response.ok) return;
+    const data = (await response.json()) as { notifications: CrmNotification[] };
+    setBootstrap((current) => current ? { ...current, notifications: data.notifications } : current);
+  }
+
+  async function enableBrowserNotifications() {
+    if (typeof Notification === "undefined") {
+      setToast("Браузер не поддерживает системные уведомления.");
+      return;
+    }
+    const permission = await Notification.requestPermission();
+    setToast(permission === "granted" ? "Системные уведомления включены." : "Браузер не разрешил уведомления.");
+  }
 
   async function runAction(action: CrmAction, message: string) {
     setLoadingAction(true);
@@ -212,6 +274,7 @@ export function CrmApp() {
   const canCreateUsers = currentUser?.role === "Руководитель" || currentUser?.role === "РОП";
   const canCreateLeads = currentUser?.role !== "Аккаунт-менеджер";
   const canDeleteLeads = currentUser?.role === "Руководитель" || currentUser?.role === "РОП";
+  const unreadNotifications = (bootstrap?.notifications ?? []).filter((item) => !item.readAt);
 
   useEffect(() => {
     if (selectedLeadId) window.sessionStorage.setItem("optiai:selectedLeadId", selectedLeadId);
@@ -350,11 +413,16 @@ export function CrmApp() {
 
     if (lead.stage === 2 || lead.stage === 3) {
       return (
-        <>
-          <a href={phoneHref(lead.phone)} onClick={() => void runAction({ type: "record_call", payload: { leadId: lead.id, ownerId: currentUser.id } }, "Звонок открыт на устройстве, CRM зафиксировала разговор.")} className={primary}>Звонок</a>
-          <button disabled={loadingAction} onClick={() => void moveLeadToStage(lead, 4)} className={primary}>Далее: разговор состоялся</button>
-          <button disabled={loadingAction} onClick={() => void runAction({ type: "mark_no_answer", payload: { leadId: lead.id, ownerId: lead.ownerId } }, "Недозвон зафиксирован: задачи на 1, 3 и 7 дней поставлены.")} className={warning}>Не дозвон</button>
-        </>
+        <a
+          href={phoneHref(lead.phone)}
+          onClick={() => {
+            setSelectedLeadId(lead.id);
+            setModal("callResult");
+          }}
+          className={primary}
+        >
+          <PhoneCall size={15} /> Позвонить
+        </a>
       );
     }
 
@@ -421,6 +489,10 @@ export function CrmApp() {
     ["Churn", `${metrics.churn}%`, "отток клиентов"],
     ["LTV", money(metrics.ltv), "средний жизненный цикл"]
   ];
+  const todayKey = new Date().toISOString().slice(0, 10);
+  const visibleTasks = [...state.tasks]
+    .filter((task) => task.status === taskFilter)
+    .sort((a, b) => a.dueAt.localeCompare(b.dueAt) || a.title.localeCompare(b.title, "ru"));
 
   return (
     <div className="crm-shell">
@@ -439,7 +511,10 @@ export function CrmApp() {
             .map(({ id, icon: Icon }) => (
               <button
                 key={id}
-                onClick={() => setActiveView(id)}
+                onClick={() => {
+                  setNotificationsOpen(false);
+                  setActiveView(id);
+                }}
                 className={clsx("crm-nav-item", activeView === id && "crm-nav-item-active")}
                 title={VIEW_TITLES[id]}
               >
@@ -518,6 +593,53 @@ export function CrmApp() {
                 </div>
               )}
             </div>
+            <div className="relative">
+              <button
+                onClick={() => setNotificationsOpen((value) => !value)}
+                className="ui-button ui-button-secondary ui-icon-button relative"
+                aria-label="Уведомления"
+                title="Уведомления"
+              >
+                <Bell size={19} />
+                {unreadNotifications.length > 0 && (
+                  <span className="absolute -right-1 -top-1 grid min-h-5 min-w-5 place-items-center rounded-full bg-rose-600 px-1 text-[10px] font-bold text-white">
+                    {Math.min(99, unreadNotifications.length)}
+                  </span>
+                )}
+              </button>
+              {notificationsOpen && (
+                <div className="absolute right-0 top-12 z-50 w-[min(390px,calc(100vw-32px))] rounded-lg border border-[#E5E7EB] bg-white p-2 shadow-[var(--shadow-popover)] max-md:fixed max-md:left-4 max-md:right-4 max-md:top-32 max-md:w-auto">
+                  <div className="flex items-center justify-between gap-2 px-2 py-2">
+                    <div>
+                      <strong className="block text-sm text-[#202939]">Уведомления</strong>
+                      <span className="text-xs text-slate-500">Непрочитанных: {unreadNotifications.length}</span>
+                    </div>
+                    {unreadNotifications.length > 0 && <button onClick={() => void markNotification()} className="text-xs font-semibold text-[#4357D9]">Прочитать все</button>}
+                  </div>
+                  <div className="max-h-80 overflow-y-auto">
+                    {(bootstrap.notifications ?? []).length === 0 && <div className="px-2 py-5 text-center text-sm text-slate-500">Новых уведомлений нет</div>}
+                    {(bootstrap.notifications ?? []).slice(0, 20).map((notification) => (
+                      <button
+                        key={notification.id}
+                        onClick={() => {
+                          void markNotification(notification.id);
+                          setNotificationsOpen(false);
+                          const lead = notification.leadId ? state.leads.find((item) => item.id === notification.leadId) : undefined;
+                          if (lead) openLead(lead);
+                          else setActiveView("tasks");
+                        }}
+                        className={clsx("mb-1 block w-full rounded-md px-3 py-2 text-left hover:bg-slate-50", !notification.readAt && "bg-[#F3F5FF]")}
+                      >
+                        <strong className="block text-sm text-[#202939]">{notification.title}</strong>
+                        <span className="mt-0.5 block text-xs leading-5 text-slate-600">{notification.body}</span>
+                        <time className="mt-1 block text-[11px] text-slate-400">{new Date(notification.createdAt).toLocaleString("ru-RU")}</time>
+                      </button>
+                    ))}
+                  </div>
+                  <button onClick={() => void enableBrowserNotifications()} className="ui-button ui-button-secondary mt-2 w-full"><Bell size={15} /> Включить уведомления устройства</button>
+                </div>
+              )}
+            </div>
             <button
               onClick={() => selectedLead && openLead(selectedLead)}
               className="ui-button ui-button-secondary ui-icon-button"
@@ -582,6 +704,61 @@ export function CrmApp() {
                 </div>
               </Panel>
             </div>
+          </section>
+        )}
+
+        {activeView === "tasks" && (
+          <section className="grid gap-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="grid w-full grid-cols-3 rounded-lg border border-[#E5E7EB] bg-white p-1 sm:inline-grid sm:w-auto">
+                {(["open", "done", "cancelled"] as const).map((status) => (
+                  <button
+                    key={status}
+                    onClick={() => setTaskFilter(status)}
+                    className={clsx("min-w-0 rounded-md px-2 py-2 text-xs font-semibold sm:px-3 sm:text-sm", taskFilter === status ? "bg-[#EEF1FF] text-[#4357D9]" : "text-slate-600 hover:bg-slate-50")}
+                  >
+                    {status === "open" ? "В работе" : status === "done" ? "Выполнены" : "Отменены"}
+                    <span className="ml-1 tabular-nums sm:ml-2">{state.tasks.filter((task) => task.status === status).length}</span>
+                  </button>
+                ))}
+              </div>
+              <span className="text-sm text-slate-600">Планировщик проверяет сроки ежедневно в 09:00 МСК.</span>
+            </div>
+            <Panel title="Задачи" subtitle="Перезвоны, ручные действия, прогревы и задачи автоматизаций.">
+              <div className="grid gap-2">
+                {visibleTasks.length === 0 && <EmptyState title="В этой группе задач нет" text="Новые задачи появятся после действий в воронке или запуска планировщика." />}
+                {visibleTasks.map((task) => {
+                  const lead = state.leads.find((item) => item.id === task.leadId);
+                  const overdue = task.status === "open" && task.dueAt < todayKey;
+                  const dueToday = task.status === "open" && task.dueAt === todayKey;
+                  return (
+                    <article key={task.id} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-4 rounded-lg border border-[#E5E7EB] bg-white p-4 max-md:grid-cols-1">
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <strong className="text-sm text-[#202939]">{task.title}</strong>
+                          {overdue && <Badge>просрочено</Badge>}
+                          {dueToday && <Badge>сегодня</Badge>}
+                          {task.automationKey && <Badge>автоматически</Badge>}
+                        </div>
+                        <button onClick={() => lead && openLead(lead)} className="mt-1 block truncate text-left text-sm text-slate-600 hover:text-[#4357D9]">
+                          {lead?.companyName ?? "Лид удалён"} · {userName(task.ownerId)}
+                        </button>
+                        <span className={clsx("mt-2 inline-flex items-center gap-1 text-xs font-semibold", overdue ? "text-rose-700" : "text-slate-500")}>
+                          <Clock3 size={14} /> {dateLabel(task.dueAt)}
+                        </span>
+                      </div>
+                      {task.status === "open" && (
+                        <div className="flex flex-wrap gap-2 max-md:w-full">
+                          <button disabled={loadingAction} onClick={() => void runAction({ type: "complete_task", payload: { taskId: task.id } }, "Задача выполнена.")} className="ui-button ui-button-success"><CheckCircle2 size={15} /> Выполнить</button>
+                          <button disabled={loadingAction} onClick={() => { setSelectedTaskId(task.id); setModal("rescheduleTask"); }} className="ui-button ui-button-secondary"><CalendarClock size={15} /> Перенести</button>
+                          <button disabled={loadingAction} onClick={() => void runAction({ type: "cancel_task", payload: { taskId: task.id } }, "Задача отменена.")} className="ui-button ui-button-danger"><X size={15} /> Отменить</button>
+                        </div>
+                      )}
+                    </article>
+                  );
+                })}
+              </div>
+            </Panel>
           </section>
         )}
 
@@ -754,7 +931,7 @@ export function CrmApp() {
 
         {activeView === "callcenter" && (
           <section className="grid grid-cols-[.8fr_1.2fr] gap-4 max-xl:grid-cols-1">
-            <Panel title="Список обзвона" subtitle="Клик по номеру, запись, расшифровка и AI-анализ.">
+            <Panel title="Список обзвона" subtitle="Откройте телефон через tel:, затем зафиксируйте результат в воронке.">
               <div className="grid gap-3">
                 {state.leads.filter((lead) => lead.status !== "lost").length === 0 && <EmptyState title="Список обзвона пуст" text="После создания лидов здесь появятся реальные звонки менеджеров." />}
                 {state.leads.filter((lead) => lead.status !== "lost").map((lead) => (
@@ -771,7 +948,7 @@ export function CrmApp() {
               </div>
             </Panel>
 
-            <Panel title="Расшифровки и AI-анализ" subtitle="Текст разговора, summary, возражения, вероятность сделки, ошибки менеджера.">
+            <Panel title="Расшифровки и AI-анализ" subtitle="Появятся после подключения телефонии и сервиса записи звонков.">
               <div className="grid gap-3">
                 {state.callRecords.length === 0 && <EmptyState title="Записей звонков пока нет" text="Здесь появятся реальные записи, расшифровки и AI-анализ после звонков." />}
                 {state.callRecords.slice(0, 5).map((call) => {
@@ -955,17 +1132,35 @@ export function CrmApp() {
 
         {activeView === "automations" && (
           <section className="grid grid-cols-[.9fr_1.1fr] gap-4 max-xl:grid-cols-1">
-            <Panel title="Автоматизации" subtitle="3/7/14 дней без ответа и перезвоны после недозвона.">
+            <Panel title="Автоматизации" subtitle="Правила выполняются планировщиком автоматически, без ручного запуска.">
+              <div className="mb-3 rounded-lg border border-[#DCE2EA] bg-[#F8FAFC] p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <strong className="block text-sm text-[#202939]">Vercel Cron · ежедневно 09:00 МСК</strong>
+                    <span className="text-xs text-slate-600">
+                      {bootstrap.automationStatus?.status === "completed" && bootstrap.automationStatus.finishedAt
+                        ? `Последний запуск: ${new Date(bootstrap.automationStatus.finishedAt).toLocaleString("ru-RU")}`
+                        : bootstrap.automationStatus?.status === "failed"
+                          ? "Последний запуск завершился с ошибкой"
+                          : bootstrap.automationStatus?.status === "running"
+                            ? "Планировщик выполняется"
+                            : "Первый запуск ещё не выполнялся"}
+                    </span>
+                  </div>
+                  <Badge>{bootstrap.automationStatus?.status === "completed" ? "работает" : bootstrap.automationStatus?.status === "failed" ? "ошибка" : "ожидание"}</Badge>
+                </div>
+              </div>
               {[
                 ["no_answer_3", "Нет ответа 3 дня", "Отправить сообщение"],
                 ["no_answer_7", "Нет ответа 7 дней", "Создать задачу менеджеру"],
                 ["no_answer_14", "Нет ответа 14 дней", "Запустить отдельный прогрев"],
-                ["missed_call", "Не дозвонились", "Перезвонить через 1, 3 и 7 дней"]
+                ["missed_call", "Не дозвонились", "Уведомить о перезвоне через 1, 3 и 7 дней"],
+                ["renewal", "Продление", "Напомнить за 30, 14, 7 и 3 дня"]
               ].map(([key, title, detail]) => (
-                <button key={key} onClick={() => void runAction({ type: "run_automation", payload: { key: key as "no_answer_3" } }, "Автоматизация выполнена.")} className="mb-2 w-full rounded-lg border border-[#E5E7EB] bg-white p-3 text-left transition-colors hover:border-[#AEB9FF]">
+                <div key={key} className="mb-2 w-full rounded-lg border border-[#E5E7EB] bg-white p-3">
                   <strong>{title}</strong>
                   <span className="block text-sm text-slate-600">{detail}</span>
-                </button>
+                </div>
               ))}
             </Panel>
 
@@ -996,6 +1191,29 @@ export function CrmApp() {
         <ModalShell onClose={() => setModal(null)}>
           {modal === "newUser" && <NewUserForm currentUser={currentUser} onSubmit={async (action) => { const ok = await runAction(action, "Приглашение отправлено сотруднику."); if (ok) setModal(null); }} />}
           {modal === "password" && <AccountPasswordForm onCancel={() => setModal(null)} onSuccess={() => { setBootstrap(null); setModal(null); }} />}
+          {modal === "rescheduleTask" && state.tasks.find((task) => task.id === selectedTaskId) && (
+            <RescheduleTaskForm
+              task={state.tasks.find((task) => task.id === selectedTaskId)!}
+              onCancel={() => setModal(null)}
+              onSubmit={async (dueAt) => {
+                const ok = await runAction({ type: "reschedule_task", payload: { taskId: selectedTaskId, dueAt } }, "Задача перенесена.");
+                if (ok) setModal(null);
+              }}
+            />
+          )}
+          {modal === "callResult" && selectedLead && (
+            <CallResultForm
+              lead={selectedLead}
+              ownerId={currentUser.id}
+              submitting={loadingAction}
+              onCancel={() => setModal(null)}
+              onSubmit={async (action) => {
+                const ok = await runAction(action, "Результат звонка сохранён.");
+                if (ok) setModal(null);
+                return ok;
+              }}
+            />
+          )}
           {modal === "newLead" && <NewLeadForm state={state} currentUser={currentUser} onSubmit={async (action) => { const ok = await runAction(action, "Лид создан и задача поставлена."); if (ok) setModal(null); }} />}
           {modal === "editLead" && selectedLead && (
             <EditLeadForm
@@ -1359,6 +1577,114 @@ function ModalShell({ children, onClose }: { children: React.ReactNode; onClose:
         {children}
       </section>
     </div>
+  );
+}
+
+function CallResultForm({
+  lead,
+  ownerId,
+  submitting,
+  onSubmit,
+  onCancel
+}: {
+  lead: Lead;
+  ownerId: string;
+  submitting: boolean;
+  onSubmit: (action: CrmAction) => Promise<boolean>;
+  onCancel: () => void;
+}) {
+  const [result, setResult] = useState<ManualCallResult | null>(null);
+  const [comment, setComment] = useState("");
+  const options: { id: ManualCallResult; label: string; hint: string; icon: typeof PhoneCall }[] = [
+    { id: "answered", label: "Дозвонился", hint: "Перевести к состоявшемуся разговору", icon: CheckCircle2 },
+    { id: "no_answer", label: "Не дозвонился", hint: "Поставить перезвоны через 1/3/7 дней", icon: PhoneOff },
+    { id: "meeting", label: "Назначена встреча", hint: "Создать задачу на подготовку", icon: CalendarCheck2 },
+    { id: "comment", label: "Только комментарий", hint: "Не менять этап и показатели", icon: MessageSquareText }
+  ];
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!result || (result === "comment" && !comment.trim())) return;
+    await onSubmit({
+      type: "record_call_result",
+      payload: { leadId: lead.id, ownerId, result, comment: comment.trim() || undefined }
+    });
+  }
+
+  return (
+    <form onSubmit={submit} className="grid gap-4">
+      <div className="pr-12">
+        <h2 className="text-xl font-bold text-[#202939]">Результат звонка</h2>
+        <p className="mt-2 text-sm text-slate-600">{lead.companyName} · {lead.contactName} · {lead.phone}</p>
+      </div>
+
+      <a href={phoneHref(lead.phone)} className="ui-button ui-button-primary w-fit"><PhoneCall size={16} /> Позвонить ещё раз</a>
+
+      <div className="grid grid-cols-2 gap-2 max-md:grid-cols-1" role="group" aria-label="Результат звонка">
+        {options.map(({ id, label, hint, icon: Icon }) => (
+          <button
+            key={id}
+            type="button"
+            aria-pressed={result === id}
+            onClick={() => setResult(id)}
+            className={clsx(
+              "flex min-h-20 items-start gap-3 rounded-lg border p-3 text-left transition-colors",
+              result === id ? "border-[#536DFE] bg-[#EEF1FF] text-[#3446B5]" : "border-[#D0D5DD] bg-white text-[#202939] hover:border-[#AEB9FF]"
+            )}
+          >
+            <Icon size={19} className="mt-0.5 shrink-0" />
+            <span>
+              <strong className="block text-sm">{label}</strong>
+              <span className="mt-1 block text-xs leading-5 text-slate-600">{hint}</span>
+            </span>
+          </button>
+        ))}
+      </div>
+
+      <label className="ui-label">
+        Комментарий {result === "comment" ? "(обязательно)" : "(необязательно)"}
+        <textarea
+          value={comment}
+          onChange={(event) => setComment(event.target.value)}
+          maxLength={2000}
+          rows={4}
+          placeholder="Кратко зафиксируйте договорённости или причину недозвона"
+          className="ui-field resize-y"
+        />
+      </label>
+
+      <div className="flex justify-end gap-2 max-sm:flex-col-reverse">
+        <button type="button" onClick={onCancel} disabled={submitting} className="ui-button ui-button-secondary">Отмена</button>
+        <button type="submit" disabled={submitting || !result || (result === "comment" && !comment.trim())} className="ui-button ui-button-primary">
+          {submitting ? "Сохраняем..." : "Сохранить результат"}
+        </button>
+      </div>
+    </form>
+  );
+}
+
+function RescheduleTaskForm({ task, onSubmit, onCancel }: {
+  task: CrmState["tasks"][number];
+  onSubmit: (dueAt: string) => Promise<void>;
+  onCancel: () => void;
+}) {
+  const minimum = new Date().toISOString().slice(0, 10);
+  return (
+    <form onSubmit={(event) => {
+      event.preventDefault();
+      const data = new FormData(event.currentTarget);
+      void onSubmit(String(data.get("dueAt") ?? ""));
+    }} className="grid gap-4">
+      <div>
+        <h2 className="pr-12 text-xl font-bold text-[#202939]">Перенести задачу</h2>
+        <p className="mt-1 text-sm leading-5 text-slate-600">{task.title}</p>
+      </div>
+      <label className="ui-label">Новая дата<input name="dueAt" type="date" min={minimum} defaultValue={task.dueAt < minimum ? minimum : task.dueAt} required className="ui-field" /></label>
+      <div className="flex flex-wrap gap-2">
+        <button className="ui-button ui-button-primary"><CalendarClock size={15} /> Перенести</button>
+        <button type="button" onClick={onCancel} className="ui-button ui-button-secondary">Отмена</button>
+      </div>
+    </form>
   );
 }
 

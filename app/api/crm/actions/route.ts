@@ -8,6 +8,9 @@ import type { CrmAction, CrmUser } from "@/lib/crm/types";
 import { saveIntegrationSecrets } from "@/lib/integrations/secrets";
 import { auditDescriptor, listSecurityAudit, recordSecurityAuditSafe } from "@/lib/security/audit";
 import { supabaseAuthEnabled } from "@/lib/supabase/auth";
+import { listNotificationsForUser, markTaskNotificationsRead } from "@/lib/notifications/store";
+import { assignWarmupSequence } from "@/lib/automations/warmup";
+import { getAutomationStatus } from "@/lib/automations/scheduler";
 
 const actionSchema = z.object({
   type: z.string(),
@@ -20,6 +23,17 @@ const updateLeadPayloadSchema = z.object({
 });
 
 const deleteLeadPayloadSchema = z.object({ leadId: z.string().min(1) });
+const taskPayloadSchema = z.object({ taskId: z.string().min(1) });
+const rescheduleTaskPayloadSchema = taskPayloadSchema.extend({ dueAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) });
+const callResultPayloadSchema = z.object({
+  leadId: z.string().min(1),
+  ownerId: z.string().min(1),
+  result: z.enum(["answered", "no_answer", "meeting", "comment"]),
+  comment: z.string().trim().max(2000).optional()
+}).refine((value) => value.result !== "comment" || Boolean(value.comment), {
+  message: "Для комментария нужен текст",
+  path: ["comment"]
+});
 const createUserPayloadSchema = z.object({
   fullName: z.string().trim().min(2).max(120),
   email: z.string().email(),
@@ -71,6 +85,15 @@ export async function POST(request: Request) {
   if (action.type === "delete_lead" && !deleteLeadPayloadSchema.safeParse(action.payload).success) {
     return NextResponse.json({ error: "Некорректный идентификатор лида" }, { status: 400 });
   }
+  if ((action.type === "complete_task" || action.type === "cancel_task") && !taskPayloadSchema.safeParse(action.payload).success) {
+    return NextResponse.json({ error: "Некорректная задача" }, { status: 400 });
+  }
+  if (action.type === "reschedule_task" && !rescheduleTaskPayloadSchema.safeParse(action.payload).success) {
+    return NextResponse.json({ error: "Укажите корректную дату переноса" }, { status: 400 });
+  }
+  if (action.type === "record_call_result" && !callResultPayloadSchema.safeParse(action.payload).success) {
+    return NextResponse.json({ error: "Выберите результат звонка и проверьте комментарий" }, { status: 400 });
+  }
   if (action.type === "create_warmup_step" && !createWarmupStepPayloadSchema.safeParse(action.payload).success) {
     return NextResponse.json({ error: "Проверьте день, название, текст и вложение шага прогрева" }, { status: 400 });
   }
@@ -98,6 +121,12 @@ export async function POST(request: Request) {
       await saveIntegrationSecrets(action.payload.integrationId, action.payload.config);
     }
     await applyCrmActionAsync(action);
+    if (action.type === "start_warmup") {
+      await assignWarmupSequence(action.payload.leadId, action.payload.sequenceId, currentUser.id);
+    }
+    if (action.type === "complete_task" || action.type === "cancel_task" || action.type === "reschedule_task") {
+      await markTaskNotificationsRead(currentUser.id, action.payload.taskId);
+    }
     if (supabaseAuthEnabled()) {
       if (action.type === "create_user") {
         const savedState = await getCrmStateAsync();
@@ -136,6 +165,8 @@ export async function POST(request: Request) {
     currentUser,
     state,
     metrics: dashboardMetrics(state),
+    notifications: await listNotificationsForUser(currentUser.id),
+    automationStatus: await getAutomationStatus(),
     auditLog: currentUser.role === "Руководитель" || currentUser.role === "РОП" ? await listSecurityAudit(30) : []
   });
 }
@@ -158,7 +189,12 @@ function canRunAction(user: CrmUser, action: CrmAction, state: Awaited<ReturnTyp
   if (action.type === "create_lead") return user.role === "Менеджер" && action.payload.ownerId === user.id;
   if (action.type === "delete_lead") return false;
 
-  if ((action.type === "record_call" || action.type === "mark_no_answer") && action.payload.ownerId !== user.id) return false;
+  if (action.type === "complete_task" || action.type === "cancel_task" || action.type === "reschedule_task") {
+    const task = state.tasks.find((item) => item.id === action.payload.taskId);
+    return Boolean(task && task.ownerId === user.id);
+  }
+
+  if ((action.type === "record_call" || action.type === "mark_no_answer" || action.type === "record_call_result") && action.payload.ownerId !== user.id) return false;
 
   const leadId = leadIdFromAction(action, state);
   if (leadId) {
@@ -177,6 +213,7 @@ function leadIdFromAction(action: CrmAction, state: Awaited<ReturnType<typeof ge
     || action.type === "move_stage"
     || action.type === "record_call"
     || action.type === "mark_no_answer"
+    || action.type === "record_call_result"
     || action.type === "send_message"
     || action.type === "start_warmup"
     || action.type === "mark_paid"

@@ -83,6 +83,19 @@ export function auditDescriptor(action: CrmAction) {
       return { action: "user.disabled", entityType: "crm_user", entityId: action.payload.userId };
     case "delete_user":
       return { action: "user.deleted", entityType: "crm_user", entityId: action.payload.userId };
+    case "complete_task":
+      return { action: "task.completed", entityType: "task", entityId: action.payload.taskId };
+    case "reschedule_task":
+      return { action: "task.rescheduled", entityType: "task", entityId: action.payload.taskId, details: { dueAt: action.payload.dueAt } };
+    case "cancel_task":
+      return { action: "task.cancelled", entityType: "task", entityId: action.payload.taskId };
+    case "record_call_result":
+      return {
+        action: "call.result_recorded",
+        entityType: "lead",
+        entityId: action.payload.leadId,
+        details: { result: action.payload.result }
+      };
     case "assign_lead":
       return { action: "lead.assigned", entityType: "lead", entityId: action.payload.leadId, details: { ownerId: action.payload.ownerId } };
     case "delete_lead":
