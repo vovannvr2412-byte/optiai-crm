@@ -46,6 +46,7 @@ export function connectionFromConfiguration(channel: MessengerChannel, saved?: P
     configuredFields,
     requiredEnv: [...definition.required, ...definition.webhook],
     externalAccountId: saved?.externalAccountId,
+    externalAccountUsername: saved?.externalAccountUsername,
     lastSyncAt: saved?.lastSyncAt,
     lastErrorAt: saved?.lastErrorAt,
     lastError: saved?.lastError

@@ -247,7 +247,7 @@ export function MessengerCenter({ state, currentUser, onOpenLead, onCreateLead }
               <button key={conversation.id} onClick={() => setSelectedId(conversation.id)} className={clsx("messenger-dialog-row", selectedId === conversation.id && "messenger-dialog-row-active")}>
                 <span className="messenger-avatar">{initials(conversation.contactName)}</span>
                 <span className="min-w-0 flex-1">
-                  <span className="flex items-center gap-2"><strong className="truncate text-sm">{conversation.contactName}</strong><span className={`messenger-channel messenger-channel-${conversation.channel}`}>{channelMarks[conversation.channel]}</span><time className="ml-auto shrink-0 text-xs text-slate-500">{time(conversation.lastMessageAt)}</time></span>
+                  <span className="flex items-center gap-2"><strong className="truncate text-sm">{conversation.contactName}</strong><span className={`messenger-channel messenger-channel-${conversation.channel}`}>{channelMarks[conversation.channel]}</span>{conversation.needsReconnect && <span className="messenger-reconnect-label">Нужен /start</span>}<time className="ml-auto shrink-0 text-xs text-slate-500">{time(conversation.lastMessageAt)}</time></span>
                   <span className="mt-1 flex items-center gap-2"><span className="truncate text-sm text-slate-600">{conversation.lastMessageText}</span>{conversation.unreadCount > 0 && <span className="messenger-unread">{conversation.unreadCount}</span>}</span>
                   <span className="mt-1 block truncate text-xs text-slate-500">{lead ? `${lead.companyName} · ${conversationOwner?.fullName ?? "без ответственного"}` : "Лид не связан"}</span>
                 </span>
@@ -269,6 +269,7 @@ export function MessengerCenter({ state, currentUser, onOpenLead, onCreateLead }
               <button onClick={() => setShowDetails(true)} className="ui-button ui-button-secondary ui-icon-button ml-auto sm:ml-0 xl:hidden" title="Информация о клиенте" aria-label="Информация о клиенте"><PanelRight size={17} /></button>
             </header>
             <div ref={messageViewport} onScroll={(event) => { const node = event.currentTarget; shouldStickToBottom.current = node.scrollHeight - node.scrollTop - node.clientHeight < 80; }} className="messenger-message-list">
+              {selected.needsReconnect && <div className="messenger-reconnect-notice" role="status"><AlertCircle size={18} /><div><strong>Диалог перенесён на нового бота</strong><p>История сохранена. Попросите клиента открыть нового Telegram-бота и нажать /start — после первого сообщения отправка включится автоматически.</p></div></div>}
               {hasMore && <button disabled={loadingMessages} onClick={() => messages[0] && void loadMessages(selected.id, messages[0].sentAt)} className="ui-button ui-button-secondary mx-auto mb-4">{loadingMessages ? "Загружаем..." : "Показать более ранние"}</button>}
               {loadingMessages && messages.length === 0 && <div className="m-auto text-sm text-slate-500">Загрузка переписки...</div>}
               {!loadingMessages && messageError && messages.length === 0 && <div className="m-auto rounded-lg border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">Не удалось загрузить сообщения: {messageError}</div>}
@@ -286,7 +287,7 @@ export function MessengerCenter({ state, currentUser, onOpenLead, onCreateLead }
             {messageError && messages.length > 0 && <div className="border-t border-rose-200 bg-rose-50 px-4 py-2 text-sm text-rose-800">{messageError}</div>}
             <div className="messenger-composer-wrap">
               <div className="messenger-composer-tools">
-                <select defaultValue="" onChange={(event) => { selectWarmupStep(event.target.value); event.target.value = ""; }} className="ui-field min-w-0" aria-label="Выбрать материал прогрева">
+                <select disabled={selected.needsReconnect} defaultValue="" onChange={(event) => { selectWarmupStep(event.target.value); event.target.value = ""; }} className="ui-field min-w-0" aria-label="Выбрать материал прогрева">
                   <option value="">Материал прогрева...</option>
                   {warmupSteps.map((step) => <option key={step.id} value={step.id}>День {step.day} · {step.title}</option>)}
                 </select>
@@ -298,9 +299,9 @@ export function MessengerCenter({ state, currentUser, onOpenLead, onCreateLead }
               </div>
               <form onSubmit={(event: FormEvent) => { event.preventDefault(); void send(); }} className="messenger-composer">
                 <input ref={fileInput} type="file" accept="image/jpeg,image/png,image/webp,image/gif,video/mp4,video/quicktime,video/webm" onChange={(event) => void attachFile(event.target.files?.[0])} className="sr-only" />
-                <button type="button" onClick={() => fileInput.current?.click()} disabled={sending || uploading} className="ui-button ui-button-secondary ui-icon-button" title="Прикрепить фото или видео" aria-label="Прикрепить фото или видео"><Paperclip size={17} /></button>
-                <textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(); } }} rows={1} maxLength={4000} placeholder={uploading ? "Загружаем файл..." : "Напишите сообщение"} className="ui-field min-h-11 max-h-32 resize-y" />
-                <button disabled={sending || uploading || (!draft.trim() && !pendingAttachment)} className="ui-button ui-button-primary ui-icon-button" title="Отправить" aria-label="Отправить"><Send size={17} /></button>
+                <button type="button" onClick={() => fileInput.current?.click()} disabled={selected.needsReconnect || sending || uploading} className="ui-button ui-button-secondary ui-icon-button" title="Прикрепить фото или видео" aria-label="Прикрепить фото или видео"><Paperclip size={17} /></button>
+                <textarea disabled={selected.needsReconnect} value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(); } }} rows={1} maxLength={4000} placeholder={selected.needsReconnect ? "Ожидаем /start от клиента" : uploading ? "Загружаем файл..." : "Напишите сообщение"} className="ui-field min-h-11 max-h-32 resize-y" />
+                <button disabled={selected.needsReconnect || sending || uploading || (!draft.trim() && !pendingAttachment)} className="ui-button ui-button-primary ui-icon-button" title="Отправить" aria-label="Отправить"><Send size={17} /></button>
               </form>
             </div>
           </>
@@ -313,7 +314,7 @@ export function MessengerCenter({ state, currentUser, onOpenLead, onCreateLead }
           <dl className="grid gap-3 text-sm">
             <div><dt className="text-xs text-slate-500">Канал</dt><dd className="mt-1 font-semibold">{channelNames[selected.channel]}</dd></div>
             <div><dt className="text-xs text-slate-500">Контакт</dt><dd className="mt-1 break-all font-semibold">{selected.phone || selected.username || selected.externalContactId}</dd></div>
-            <div><dt className="text-xs text-slate-500">Состояние</dt><dd className="mt-1 font-semibold">{selected.status === "open" ? "Открыт" : selected.status === "waiting" ? "Ожидает ответа" : "Закрыт"}</dd></div>
+            <div><dt className="text-xs text-slate-500">Состояние</dt><dd className="mt-1 font-semibold">{selected.needsReconnect ? "Ожидает /start у нового бота" : selected.status === "open" ? "Открыт" : selected.status === "waiting" ? "Ожидает ответа" : "Закрыт"}</dd></div>
           </dl>
           <div className="border-t border-[#E5E7EB] pt-4">
             <div className="mb-2 flex items-center gap-2"><Link2 size={16} /><strong className="text-sm">Связь с CRM</strong></div>

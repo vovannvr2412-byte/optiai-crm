@@ -273,6 +273,11 @@ textarea:focus-visible {
 .messenger-channel-whatsapp { color: #166534; background: #dcfce7; }
 .messenger-channel-max { color: #6b21a8; background: #f3e8ff; }
 .messenger-unread { display: grid; min-width: 20px; height: 20px; flex: 0 0 auto; place-items: center; border-radius: 999px; padding-inline: 5px; color: #fff; background: var(--accent); font-size: 10px; font-weight: 800; }
+.messenger-reconnect-label { flex: 0 0 auto; border-radius: 5px; padding: 2px 5px; color: #7a4b00; background: var(--warning-soft); font-size: 9px; font-weight: 800; }
+.messenger-reconnect-notice { display: flex; align-items: flex-start; gap: 10px; border: 1px solid #f0d59c; border-radius: 8px; padding: 11px 12px; color: #6f4600; background: var(--warning-soft); }
+.messenger-reconnect-notice > svg { flex: 0 0 auto; margin-top: 1px; }
+.messenger-reconnect-notice strong { display: block; font-size: 13px; }
+.messenger-reconnect-notice p { margin-top: 2px; font-size: 12px; line-height: 18px; }
 
 .messenger-chat { display: grid; grid-template-rows: auto minmax(0, 1fr) auto auto; background: #f7f9fc; }
 .messenger-chat-header { display: flex; min-height: 64px; align-items: center; gap: 10px; border-bottom: 1px solid var(--border); padding: 10px 14px; background: var(--surface); }

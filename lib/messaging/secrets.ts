@@ -101,6 +101,23 @@ export async function saveMessengerSecrets(channel: MessengerChannel, updates: R
   return getMessengerSecretPresence(channel);
 }
 
+export async function replaceMessengerSecrets(channel: MessengerChannel, values: Record<string, string>, options: { discardUnreadable?: boolean } = {}) {
+  let all: StoredSecrets;
+  try {
+    all = await readStoredSecrets();
+  } catch (error) {
+    if (!options.discardUnreadable) throw error;
+    all = {};
+  }
+  all[channel] = Object.fromEntries(
+    messengerSecretFields[channel]
+      .map((field) => [field, values[field]?.trim() || ""] as const)
+      .filter(([, value]) => Boolean(value))
+  );
+  await writeStoredSecrets(all);
+  return getMessengerSecretPresence(channel);
+}
+
 export async function deleteMessengerSecrets(channel: MessengerChannel) {
   const all = await readStoredSecrets();
   delete all[channel];

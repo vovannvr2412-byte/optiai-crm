@@ -59,6 +59,37 @@ export function saveLocalMedia(fileName: string, bytes: Uint8Array) {
   writeFileSync(path.join(localDirectory, safeName), bytes, { flag: "wx" });
 }
 
+export async function persistMessengerMedia(input: {
+  bytes: ArrayBuffer;
+  mimeType: string;
+  baseUrl: string;
+}) {
+  const mimeType = input.mimeType.split(";", 1)[0].trim().toLowerCase();
+  const extension = extensions[mimeType];
+  if (!extension || (!mimeType.startsWith("image/") && !mimeType.startsWith("video/"))) {
+    throw new Error("Формат медиафайла не поддерживается хранилищем CRM.");
+  }
+  if (!input.bytes.byteLength || input.bytes.byteLength > MAX_MEDIA_SIZE) {
+    throw new Error("Медиафайл превышает лимит 25 МБ.");
+  }
+
+  const objectPath = `messengers/${new Date().toISOString().slice(0, 10)}/${randomUUID()}${extension}`;
+  if (!mediaPersistenceUsesSupabase()) {
+    const fileName = path.basename(objectPath);
+    saveLocalMedia(fileName, new Uint8Array(input.bytes));
+    return new URL(`/api/media/${encodeURIComponent(fileName)}`, input.baseUrl).toString();
+  }
+
+  const supabase = createServiceSupabaseClient();
+  const { error } = await supabase.storage.from(MEDIA_BUCKET).upload(objectPath, input.bytes, {
+    contentType: mimeType,
+    cacheControl: "31536000",
+    upsert: false
+  });
+  if (error) throw new Error(`Не удалось сохранить медиафайл в CRM: ${error.message}`);
+  return supabase.storage.from(MEDIA_BUCKET).getPublicUrl(objectPath).data.publicUrl;
+}
+
 export function isTrustedMediaUrl(value: string, requestUrl: string) {
   try {
     const mediaUrl = new URL(value);

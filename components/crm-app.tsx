@@ -82,6 +82,7 @@ const auditActionLabels: Record<string, string> = {
   "integration.status_changed": "Статус интеграции изменен",
   "messenger.credentials_updated": "Ключи мессенджера обновлены",
   "messenger.credentials_deleted": "Ключи мессенджера удалены",
+  "messenger.bot_replaced": "Telegram-бот заменён",
   "messenger.connection_checked": "Подключение мессенджера проверено"
 };
 
@@ -238,7 +239,8 @@ export function CrmApp() {
         throw new Error(data?.error ?? "Не удалось завершить сессию.");
       }
       window.sessionStorage.removeItem("optiai:selectedLeadId");
-      window.location.assign("/");
+      setBootstrap(null);
+      setAuthChecked(true);
     } catch (error) {
       setToast(error instanceof Error ? error.message : "Не удалось выйти из аккаунта.");
       setLoggingOut(false);
@@ -1949,6 +1951,7 @@ function MessengerIntegrationForm({ channel }: { channel: "telegram" | "whatsapp
           <div className="grid grid-cols-2 gap-3 max-sm:grid-cols-1">
             <div className="rounded-lg border border-[#E5E7EB] p-3"><span className="text-xs text-slate-500">Состояние</span><strong className="mt-1 block">{statusLabel}</strong></div>
             <div className="rounded-lg border border-[#E5E7EB] p-3"><span className="text-xs text-slate-500">Webhook-защита</span><strong className="mt-1 block">{connection?.webhookConfigured ? "Настроена" : "Не настроена"}</strong></div>
+            {channel === "telegram" && connection?.externalAccountId && <div className="col-span-2 rounded-lg border border-[#E5E7EB] p-3 max-sm:col-span-1"><span className="text-xs text-slate-500">Подключённый бот</span><strong className="mt-1 block">{connection.externalAccountUsername ? `@${connection.externalAccountUsername}` : `Telegram Bot ${connection.externalAccountId}`}</strong></div>}
           </div>
           <div className="grid gap-3">
             {messengerCredentialFields[channel].map((field) => {
@@ -1977,12 +1980,12 @@ function MessengerIntegrationForm({ channel }: { channel: "telegram" | "whatsapp
       )}
       {message && <div className="rounded-lg border border-[#DCE2EA] bg-slate-50 p-3 text-sm text-slate-700">{message}</div>}
       <div className="flex flex-wrap gap-2">
-        <button type="submit" disabled={saving || resetting} className="ui-button ui-button-primary">{saving ? "Сохраняем..." : "Сохранить ключи"}</button>
+        <button type="submit" disabled={saving || resetting} className="ui-button ui-button-primary">{saving ? "Проверяем и подключаем..." : channel === "telegram" && connection?.externalAccountId ? "Заменить бота" : "Сохранить ключи"}</button>
         <button type="button" disabled={checking || !connection?.configured} onClick={() => void check()} className="ui-button ui-button-primary">{checking ? "Проверяем..." : "Проверить подключение"}</button>
         <button type="button" disabled={resetting || saving} onClick={() => void resetSavedSettings()} className="ui-button ui-button-secondary">{resetting ? "Удаляем..." : "Удалить ключи CRM"}</button>
         <a href="/messengers-setup" target="_blank" rel="noreferrer" className="ui-button ui-button-secondary">Инструкция</a>
       </div>
-      <p className="text-xs leading-5 text-slate-500">Пустое поле сохраняет прежнее значение. Переменные `.env.local` или Vercel используются как резерв, когда для канала нет соответствующего ключа в CRM.</p>
+      <p className="text-xs leading-5 text-slate-500">{channel === "telegram" ? "При замене CRM проверяет нового бота, переносит старые фото и видео в своё хранилище, обновляет webhook и сохраняет историю с назначениями. Клиенту нужно один раз нажать /start у нового бота." : "Пустое поле сохраняет прежнее значение. Переменные `.env.local` или Vercel используются как резерв, когда для канала нет соответствующего ключа в CRM."}</p>
     </form>
   );
 }

@@ -72,6 +72,8 @@ function toConversation(row: unknown): MessengerConversation {
   return {
     id: String(item.id), connectionId: String(item.connection_id), channel: item.channel as MessengerChannel,
     externalConversationId: String(item.external_conversation_id), externalContactId: String(item.external_contact_id),
+    botExternalAccountId: item.bot_external_account_id ? String(item.bot_external_account_id) : undefined,
+    needsReconnect: Boolean(item.needs_reconnect),
     contactName: String(item.contact_name), avatarUrl: item.avatar_url ? String(item.avatar_url) : undefined,
     phone: item.phone ? String(item.phone) : undefined, username: item.username ? String(item.username) : undefined,
     leadId: item.lead_id ? String(item.lead_id) : undefined, ownerId: item.owner_id ? String(item.owner_id) : undefined,
@@ -156,6 +158,49 @@ export async function getMessageForUser(userId: string, messageId: string) {
   if (!message) throw new Error("Сообщение не найдено.");
   await getConversationForUser(userId, message.conversationId);
   return message;
+}
+
+export async function listUnarchivedTelegramMedia() {
+  if (!supabasePersistenceEnabled()) {
+    return localSnapshot().messages
+      .filter((message) => message.channel === "telegram" && message.direction === "inbound"
+        && message.attachments.some((attachment) => (attachment.type === "image" || attachment.type === "video") && attachment.externalId && !attachment.url))
+      .map((message) => ({ id: message.id, attachments: structuredClone(message.attachments) }));
+  }
+
+  const supabase = createServiceSupabaseClient();
+  const result: { id: string; attachments: MessengerMessage["attachments"] }[] = [];
+  const pageSize = 500;
+  for (let from = 0; ; from += pageSize) {
+    const { data, error } = await supabase
+      .from("messenger_messages")
+      .select("id,attachments")
+      .eq("channel", "telegram")
+      .eq("direction", "inbound")
+      .order("id", { ascending: true })
+      .range(from, from + pageSize - 1);
+    if (error) throw error;
+    for (const row of data ?? []) {
+      const attachments = (row.attachments ?? []) as MessengerMessage["attachments"];
+      if (attachments.some((attachment) => (attachment.type === "image" || attachment.type === "video") && attachment.externalId && !attachment.url)) {
+        result.push({ id: String(row.id), attachments });
+      }
+    }
+    if (!data || data.length < pageSize) break;
+  }
+  return result;
+}
+
+export async function saveMessageAttachments(messageId: string, attachments: MessengerMessage["attachments"]) {
+  if (!supabasePersistenceEnabled()) {
+    return mutateLocal((snapshot) => {
+      const message = snapshot.messages.find((item) => item.id === messageId);
+      if (!message) throw new Error("Сообщение для архивации медиа не найдено.");
+      message.attachments = structuredClone(attachments);
+    });
+  }
+  const { error } = await createServiceSupabaseClient().from("messenger_messages").update({ attachments }).eq("id", messageId);
+  if (error) throw error;
 }
 
 export async function listMessagesForUser(userId: string, conversationId: string, before?: string, limit = 40) {
@@ -328,6 +373,7 @@ export async function saveIncomingMessage(incoming: NormalizedIncomingMessage) {
         conversation = {
           id: randomUUID(), connectionId: incoming.connectionId, channel: incoming.channel,
           externalConversationId: incoming.externalConversationId, externalContactId: incoming.externalContactId,
+          botExternalAccountId: incoming.botExternalAccountId, needsReconnect: false,
           contactName: incoming.contactName, phone: incoming.phone, username: incoming.username,
           lastMessageText: incoming.text, lastMessageAt: incoming.sentAt, unreadCount: 0,
           status: "open", notes: "", createdAt: now, updatedAt: now
@@ -337,6 +383,10 @@ export async function saveIncomingMessage(incoming: NormalizedIncomingMessage) {
       conversation.contactName = incoming.contactName || conversation.contactName;
       conversation.phone = incoming.phone || conversation.phone;
       conversation.username = incoming.username || conversation.username;
+      if (incoming.channel === "telegram" && incoming.botExternalAccountId) {
+        conversation.botExternalAccountId = incoming.botExternalAccountId;
+        conversation.needsReconnect = false;
+      }
       conversation.lastMessageText = incoming.text;
       conversation.lastMessageAt = incoming.sentAt;
       conversation.unreadCount += 1;
@@ -365,6 +415,7 @@ export async function saveIncomingMessage(incoming: NormalizedIncomingMessage) {
     const { data, error } = await supabase.from("messenger_conversations").insert({
       connection_id: incoming.connectionId, channel: incoming.channel, external_conversation_id: incoming.externalConversationId,
       external_contact_id: incoming.externalContactId, contact_name: incoming.contactName, phone: incoming.phone,
+      bot_external_account_id: incoming.botExternalAccountId ?? null, needs_reconnect: false,
       username: incoming.username, last_message_text: incoming.text, last_message_at: incoming.sentAt,
       unread_count: 1, status: "open", notes: ""
     }).select("*").single();
@@ -385,6 +436,7 @@ export async function saveIncomingMessage(incoming: NormalizedIncomingMessage) {
   }
   const { data: updatedConversation, error: updateError } = await supabase.from("messenger_conversations").update({
     contact_name: incoming.contactName, phone: incoming.phone ?? conversation.phone, username: incoming.username ?? conversation.username,
+    ...(incoming.channel === "telegram" && incoming.botExternalAccountId ? { bot_external_account_id: incoming.botExternalAccountId, needs_reconnect: false } : {}),
     last_message_text: incoming.text, last_message_at: incoming.sentAt, unread_count: conversation.unreadCount + 1,
     status: "open", updated_at: now
   }).eq("id", conversation.id).select("*").single();
@@ -417,6 +469,7 @@ export async function listConnections(): Promise<MessengerConnection[]> {
       return {
         id: String(item.id), channel: item.channel as MessengerChannel, name: String(item.name), status: item.status as MessengerConnection["status"],
         externalAccountId: item.external_account_id ? String(item.external_account_id) : undefined,
+        externalAccountUsername: item.external_account_username ? String(item.external_account_username) : undefined,
         lastSyncAt: item.last_sync_at ? String(item.last_sync_at) : undefined, lastErrorAt: item.last_error_at ? String(item.last_error_at) : undefined,
         lastError: item.last_error ? String(item.last_error) : undefined
       };
@@ -426,13 +479,26 @@ export async function listConnections(): Promise<MessengerConnection[]> {
   return messengerChannels.map((channel, index) => connectionFromConfiguration(channel, saved.find((item) => item.channel === channel), presence[index]));
 }
 
-export async function saveConnectionCheck(channel: MessengerChannel, result: { ok: boolean; externalAccountId?: string; message: string }) {
+export async function assertTelegramReplacementSchema() {
+  if (!supabasePersistenceEnabled()) return;
+  const supabase = createServiceSupabaseClient();
+  const [{ error: connectionError }, { error: conversationError }] = await Promise.all([
+    supabase.from("messenger_connections").select("external_account_username").limit(1),
+    supabase.from("messenger_conversations").select("bot_external_account_id,needs_reconnect").limit(1)
+  ]);
+  if (connectionError || conversationError) {
+    throw new Error("База данных не готова к замене бота. Выполните миграцию 0007_telegram_bot_replacement.sql в Supabase.");
+  }
+}
+
+export async function saveConnectionCheck(channel: MessengerChannel, result: { ok: boolean; externalAccountId?: string; externalAccountUsername?: string; message: string }) {
   const now = new Date().toISOString();
   const configuredFields = await getMessengerSecretPresence(channel);
   const base = connectionFromConfiguration(channel, undefined, configuredFields);
   const connection = connectionFromConfiguration(channel, {
     id: channel, channel, name: base.name,
     status: result.ok ? "connected" : "error", externalAccountId: result.externalAccountId,
+    externalAccountUsername: result.externalAccountUsername,
     lastSyncAt: result.ok ? now : undefined, lastErrorAt: result.ok ? undefined : now,
     lastError: result.ok ? undefined : safeProviderError(result.message)
   }, configuredFields);
@@ -440,7 +506,8 @@ export async function saveConnectionCheck(channel: MessengerChannel, result: { o
     await mutateLocal((snapshot) => {
       const stored = {
         id: connection.id, channel: connection.channel, name: connection.name, status: connection.status,
-        externalAccountId: connection.externalAccountId, lastSyncAt: connection.lastSyncAt,
+        externalAccountId: connection.externalAccountId, externalAccountUsername: connection.externalAccountUsername,
+        lastSyncAt: connection.lastSyncAt,
         lastErrorAt: connection.lastErrorAt, lastError: connection.lastError
       };
       const index = snapshot.connections.findIndex((item) => item.channel === channel);
@@ -451,11 +518,67 @@ export async function saveConnectionCheck(channel: MessengerChannel, result: { o
   }
   const { error } = await createServiceSupabaseClient().from("messenger_connections").upsert({
     id: channel, channel, name: connection.name, external_account_id: connection.externalAccountId ?? null,
+    external_account_username: connection.externalAccountUsername ?? null,
     status: connection.status, last_sync_at: connection.lastSyncAt ?? null,
     last_error_at: connection.lastErrorAt ?? null, last_error: connection.lastError ?? null, updated_at: now
   }, { onConflict: "id" });
   if (error) throw error;
   return connection;
+}
+
+export async function activateTelegramBot(input: {
+  externalAccountId: string;
+  externalAccountUsername?: string;
+  previousExternalAccountId?: string;
+  forceReconnect?: boolean;
+}) {
+  const switchedBot = Boolean(input.forceReconnect || (input.previousExternalAccountId && input.previousExternalAccountId !== input.externalAccountId));
+  const connection = await saveConnectionCheck("telegram", {
+    ok: true,
+    externalAccountId: input.externalAccountId,
+    externalAccountUsername: input.externalAccountUsername,
+    message: "Telegram-бот подключён."
+  });
+  const updatedAt = new Date().toISOString();
+  let conversationsUpdated = 0;
+  let conversationsAwaitingStart = 0;
+  if (!supabasePersistenceEnabled()) {
+    await mutateLocal((snapshot) => {
+      snapshot.conversations.forEach((conversation) => {
+        if (conversation.channel !== "telegram") return;
+        conversation.botExternalAccountId = input.externalAccountId;
+        if (switchedBot) conversation.needsReconnect = true;
+        conversation.updatedAt = updatedAt;
+        conversationsUpdated += 1;
+        if (conversation.needsReconnect) conversationsAwaitingStart += 1;
+      });
+    });
+  } else {
+    const update: Record<string, unknown> = {
+      bot_external_account_id: input.externalAccountId,
+      updated_at: updatedAt
+    };
+    if (switchedBot) update.needs_reconnect = true;
+    const { count, error } = await createServiceSupabaseClient()
+      .from("messenger_conversations")
+      .update(update, { count: "exact" })
+      .eq("channel", "telegram");
+    if (error) throw error;
+    conversationsUpdated = count ?? 0;
+    const { count: reconnectCount, error: reconnectError } = await createServiceSupabaseClient()
+      .from("messenger_conversations")
+      .select("id", { count: "exact", head: true })
+      .eq("channel", "telegram")
+      .eq("needs_reconnect", true);
+    if (reconnectError) throw reconnectError;
+    conversationsAwaitingStart = reconnectCount ?? 0;
+  }
+  return {
+    connection,
+    switchedBot,
+    conversationsUpdated,
+    conversationsAwaitingStart
+  };
 }
 
 export async function resetConnectionStatus(channel: MessengerChannel) {

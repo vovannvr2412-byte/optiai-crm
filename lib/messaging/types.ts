@@ -29,6 +29,7 @@ export type MessengerConnection = {
   channel: MessengerChannel;
   name: string;
   externalAccountId?: string;
+  externalAccountUsername?: string;
   status: MessengerConnectionStatus;
   configured: boolean;
   webhookConfigured: boolean;
@@ -45,6 +46,8 @@ export type MessengerConversation = {
   channel: MessengerChannel;
   externalConversationId: string;
   externalContactId: string;
+  botExternalAccountId?: string;
+  needsReconnect: boolean;
   contactName: string;
   avatarUrl?: string;
   phone?: string;
@@ -92,6 +95,7 @@ export type NormalizedIncomingMessage = {
   eventId: string;
   externalConversationId: string;
   externalContactId: string;
+  botExternalAccountId?: string;
   externalMessageId: string;
   contactName: string;
   phone?: string;
@@ -111,6 +115,7 @@ export type ProviderSendResult = {
 export type ProviderHealth = {
   ok: boolean;
   externalAccountId?: string;
+  externalAccountUsername?: string;
   message: string;
 };
 

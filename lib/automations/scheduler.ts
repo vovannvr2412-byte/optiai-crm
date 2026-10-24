@@ -115,6 +115,9 @@ async function sendAutomatedMessage(input: {
   const conversations = await listConversationsForUser(input.lead.ownerId);
   const conversation = conversations.find((item) => item.leadId === input.lead.id);
   if (!conversation) throw new Error("У лида нет привязанного чата в центре сообщений.");
+  if (conversation.channel === "telegram" && conversation.needsReconnect) {
+    throw new Error("Telegram-диалог ожидает /start у нового бота.");
+  }
 
   const adapter = providerFor(conversation.channel);
   if (!await adapter.isConfigured()) throw new Error(`${conversation.channel}: подключение не настроено.`);

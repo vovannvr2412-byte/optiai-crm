@@ -30,6 +30,11 @@ export async function POST(request: Request) {
 
   try {
     const conversation = await getConversationForUser(userId, parsed.data.conversationId);
+    if (conversation.channel === "telegram" && conversation.needsReconnect) {
+      return NextResponse.json({
+        error: "Клиент ещё не запустил нового Telegram-бота. Попросите его открыть бота и нажать /start."
+      }, { status: 409 });
+    }
     const message = await createPendingMessage(userId, conversation.id, parsed.data.text, parsed.data.idempotencyKey ?? randomUUID(), parsed.data.attachment);
     const adapter = providerFor(conversation.channel);
     if (!await adapter.isConfigured()) {
