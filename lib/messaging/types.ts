@@ -1,4 +1,4 @@
-export type MessengerChannel = "telegram" | "whatsapp" | "max";
+export type MessengerChannel = "telegram" | "whatsapp" | "max" | "instagram" | "avito";
 export type MessengerConnectionStatus = "not_configured" | "needs_setup" | "connected" | "error";
 export type ConversationStatus = "open" | "waiting" | "closed";
 export type MessageDirection = "inbound" | "outbound";
@@ -126,5 +126,7 @@ export type ProviderAdapter = {
   sendText(conversation: MessengerConversation, text: string): Promise<ProviderSendResult>;
   sendMedia(conversation: MessengerConversation, attachment: OutgoingMediaAttachment, caption?: string): Promise<ProviderSendResult>;
   downloadAttachment?(attachment: MessageAttachment): Promise<ProviderMediaDownload>;
+  configureWebhook?(webhookUrl: string): Promise<void>;
+  pullIncoming?(): Promise<NormalizedIncomingMessage[]>;
   normalizeWebhook(payload: unknown): NormalizedIncomingMessage[];
 };

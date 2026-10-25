@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { maxAdapter } from "@/lib/messaging/providers/max";
-import { saveIncomingMessage } from "@/lib/messaging/store";
+import { saveIncomingMessageAndNotify } from "@/lib/messaging/incoming";
 import { getMessengerSecrets } from "@/lib/messaging/secrets";
 
 export async function POST(request: Request) {
@@ -12,7 +12,7 @@ export async function POST(request: Request) {
   const messages = maxAdapter.normalizeWebhook(payload);
   if (!messages.length) return NextResponse.json({ ok: true, ignored: true });
   try {
-    const results = await Promise.all(messages.map(saveIncomingMessage));
+    const results = await Promise.all(messages.map(saveIncomingMessageAndNotify));
     return NextResponse.json({ ok: true, accepted: results.filter((item) => !item.duplicate).length });
   } catch {
     return NextResponse.json({ error: "Temporary processing error" }, { status: 503 });

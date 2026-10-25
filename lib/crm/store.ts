@@ -3,7 +3,7 @@ import { disableCredential, getCredentialsSnapshot, hydrateCredentialsSnapshot }
 import { createServiceSupabaseClient } from "@/lib/supabase/server";
 import { ensureNormalizedCrmState, writeNormalizedCrmState } from "./normalized-store";
 import { migrateLegacyIntegrationSecrets } from "@/lib/integrations/secrets";
-import { STAGES, type CrmAction, type CrmState, type Lead, type LeadTemperature, type LeadUpdate, type ManualCallResult } from "./types";
+import { STAGES, type CrmAction, type CrmState, type DashboardMetrics, type Lead, type LeadTemperature, type LeadUpdate, type ManualCallResult } from "./types";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -569,8 +569,15 @@ export function applyCrmAction(action: CrmAction): CrmState {
       lead.stage = 9;
       lead.status = "client";
       lead.tariffId = tariff.id;
-      state.payments.unshift({ id: id(), leadId: lead.id, amount: tariff.price, paidAt: dateOnly(), provider: "RoboKassa", status: "paid" });
-      state.subscriptions.unshift({ id: id(), leadId: lead.id, tariffId: tariff.id, startedAt: dateOnly(), endsAt: dateOnly(90), nextPaymentAt: dateOnly(30), contractMonths: 3, status: "active" });
+      state.payments.unshift({ id: id(), leadId: lead.id, amount: tariff.price, paidAt: dateOnly(), provider: "manual", status: "paid" });
+      const activeSubscription = state.subscriptions.find((item) => item.leadId === lead.id && item.status === "active");
+      if (activeSubscription) {
+        activeSubscription.tariffId = tariff.id;
+        activeSubscription.nextPaymentAt = dateOnly(30);
+        activeSubscription.endsAt = dateOnly(90);
+      } else {
+        state.subscriptions.unshift({ id: id(), leadId: lead.id, tariffId: tariff.id, startedAt: dateOnly(), endsAt: dateOnly(90), nextPaymentAt: dateOnly(30), contractMonths: 3, status: "active" });
+      }
       addActivity(state, lead.id, "payment", "Оплата получена", `${tariff.name}: ${tariff.price} ₽`);
     }
   }
@@ -582,6 +589,8 @@ export function applyCrmAction(action: CrmAction): CrmState {
       lead.status = "lost";
       lead.refusalReason = action.payload.reason;
       lead.temperature = "cold";
+      state.subscriptions.filter((subscription) => subscription.leadId === lead.id && subscription.status === "active")
+        .forEach((subscription) => { subscription.status = "cancelled"; });
       addActivity(state, lead.id, "stage", "Отказ зафиксирован", action.payload.reason);
     }
   }
@@ -643,29 +652,100 @@ export async function applyCrmActionAsync(action: CrmAction): Promise<CrmState> 
   }
 }
 
+export async function applyCrmActionsAsync(actions: CrmAction[]): Promise<CrmState> {
+  globalForCrm.optiCrmState = await getCrmStateAsync();
+  suppressLocalPersistence = true;
+  try {
+    for (const action of actions) applyCrmAction(action);
+    await persistCrmStateAsync(globalForCrm.optiCrmState);
+    return structuredClone(globalForCrm.optiCrmState);
+  } finally {
+    suppressLocalPersistence = false;
+  }
+}
+
 export async function persistCredentialsAsync() {
   if (!supabasePersistenceEnabled()) return;
   await writeSupabaseValue(credentialsKey, getCredentialsSnapshot());
 }
 
-export function dashboardMetrics(state: CrmState) {
+export async function setIntegrationStatusAsync(integrationId: string, status: CrmState["integrations"][number]["status"]) {
+  globalForCrm.optiCrmState = await getCrmStateAsync();
+  const integration = globalForCrm.optiCrmState.integrations.find((item) => item.id === integrationId);
+  if (!integration) throw new Error("Интеграция не найдена.");
+  integration.status = status;
+  integration.updatedAt = today();
+  await persistCrmStateAsync(globalForCrm.optiCrmState);
+}
+
+export function dashboardMetrics(state: CrmState): DashboardMetrics {
   const activeSubscriptions = state.subscriptions.filter((item) => item.status === "active");
   const mrr = activeSubscriptions.reduce((sum, subscription) => {
     const tariff = state.tariffs.find((item) => item.id === subscription.tariffId);
     return sum + (tariff?.price ?? 0);
   }, 0);
-  const wonLeads = state.leads.filter((lead) => lead.status === "client").length;
-  const lostLeads = state.leads.filter((lead) => lead.status === "lost").length;
-  const churn = wonLeads + lostLeads ? Math.round((lostLeads / (wonLeads + lostLeads)) * 1000) / 10 : 0;
-  const ltv = activeSubscriptions.length ? Math.round((mrr / activeSubscriptions.length) * 8.5) : 0;
+  const paidPayments = state.payments.filter((item) => item.status === "paid");
+  const paidRevenue = paidPayments.reduce((sum, payment) => sum + payment.amount, 0);
+  const payingLeadIds = new Set(paidPayments.map((payment) => payment.leadId));
+  const deals = payingLeadIds.size;
+  const cancelledSubscriptions = state.subscriptions.filter((item) => item.status === "cancelled");
+  const customerSubscriptions = [...activeSubscriptions, ...cancelledSubscriptions];
+  const churn = customerSubscriptions.length ? roundPercent(cancelledSubscriptions.length / customerSubscriptions.length) : 0;
+  const ltv = deals ? Math.round(paidRevenue / deals) : 0;
+  const now = Date.now();
+  const lifetimeDays = customerSubscriptions.map((subscription) => {
+    const startedAt = Date.parse(subscription.startedAt);
+    const contractualEnd = Date.parse(subscription.endsAt);
+    const effectiveEnd = subscription.status === "active" ? Math.min(now, contractualEnd) : contractualEnd;
+    return Number.isFinite(startedAt) && Number.isFinite(effectiveEnd) ? Math.max(0, (effectiveEnd - startedAt) / 86_400_000) : 0;
+  });
+  const averageLifetimeMonths = lifetimeDays.length
+    ? Math.round((lifetimeDays.reduce((sum, days) => sum + days, 0) / lifetimeDays.length / 30.44) * 10) / 10
+    : 0;
+  const reachedStage = (lead: Lead, stage: number) => {
+    if (stage === 0 || lead.stage === stage) return true;
+    if (lead.stage !== 12 && lead.stage >= stage) return true;
+    return state.activities.some((activity) => activity.leadId === lead.id && activity.type === "stage" && activity.detail === STAGES[stage]);
+  };
+  const stageConversions = STAGES.slice(0, -2).map((_, from) => {
+    const to = from + 1;
+    const entered = state.leads.filter((lead) => reachedStage(lead, from)).length;
+    const advanced = state.leads.filter((lead) => reachedStage(lead, to)).length;
+    return { from, to, entered, advanced, conversion: entered ? roundPercent(advanced / entered) : 0 };
+  });
+  const channelNames = [...new Set(state.leads.map((lead) => lead.sourceChannel || "Не указан"))];
+  const channels = channelNames.map((channel) => {
+    const leads = state.leads.filter((lead) => (lead.sourceChannel || "Не указан") === channel);
+    const leadIds = new Set(leads.map((lead) => lead.id));
+    const channelDeals = [...payingLeadIds].filter((leadId) => leadIds.has(leadId)).length;
+    const revenue = paidPayments.filter((payment) => leadIds.has(payment.leadId)).reduce((sum, payment) => sum + payment.amount, 0);
+    return { channel, leads: leads.length, deals: channelDeals, revenue, conversion: leads.length ? roundPercent(channelDeals / leads.length) : 0 };
+  }).sort((a, b) => b.leads - a.leads || b.revenue - a.revenue);
+  const managers = state.users.filter((user) => user.status === "active").map((user) => {
+    const leads = state.leads.filter((lead) => lead.ownerId === user.id);
+    const leadIds = new Set(leads.map((lead) => lead.id));
+    const managerDeals = [...payingLeadIds].filter((leadId) => leadIds.has(leadId)).length;
+    const revenue = paidPayments.filter((payment) => leadIds.has(payment.leadId)).reduce((sum, payment) => sum + payment.amount, 0);
+    const calls = state.activities.filter((activity) => activity.type === "call" && leadIds.has(activity.leadId)).length;
+    return { userId: user.id, calls, meetings: user.meetings, deals: managerDeals, revenue, conversion: leads.length ? roundPercent(managerDeals / leads.length) : 0 };
+  });
   return {
     leads: state.leads.length,
-    calls: state.callRecords.length,
-    deals: wonLeads,
-    payments: state.payments.filter((item) => item.status === "paid").length,
+    calls: state.activities.filter((activity) => activity.type === "call").length,
+    deals,
+    payments: paidPayments.length,
+    paidRevenue,
     mrr,
     churn,
     ltv,
-    conversion: state.leads.length ? Math.round((wonLeads / state.leads.length) * 100) : 0
+    averageLifetimeMonths,
+    conversion: state.leads.length ? roundPercent(deals / state.leads.length) : 0,
+    stageConversions,
+    channels,
+    managers
   };
+}
+
+function roundPercent(value: number) {
+  return Math.round(value * 1000) / 10;
 }

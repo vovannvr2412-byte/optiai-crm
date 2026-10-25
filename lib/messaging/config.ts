@@ -19,6 +19,16 @@ const channelConfig: Record<MessengerChannel, {
     name: "MAX Bot API",
     required: ["MAX_BOT_TOKEN"],
     webhook: ["MAX_WEBHOOK_SECRET"]
+  },
+  instagram: {
+    name: "Instagram Messaging API",
+    required: ["INSTAGRAM_ACCESS_TOKEN", "INSTAGRAM_ACCOUNT_ID"],
+    webhook: ["INSTAGRAM_VERIFY_TOKEN", "INSTAGRAM_APP_SECRET"]
+  },
+  avito: {
+    name: "Avito Messenger API",
+    required: ["AVITO_CLIENT_ID", "AVITO_CLIENT_SECRET"],
+    webhook: ["AVITO_WEBHOOK_SECRET"]
   }
 };
 

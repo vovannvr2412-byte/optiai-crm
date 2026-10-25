@@ -99,6 +99,29 @@ export async function saveIntegrationSecrets(integrationId: string, updates: Rec
   await writeSecrets(all);
 }
 
+export async function replaceIntegrationSecrets(integrationId: string, values: Record<string, string>) {
+  const all = await readSecrets();
+  all[integrationId] = Object.fromEntries(
+    Object.entries(values).map(([key, value]) => [key, value.trim()]).filter(([, value]) => Boolean(value))
+  );
+  await writeSecrets(all);
+}
+
+export async function getIntegrationSecrets(integrationId: string) {
+  return { ...(await readSecrets())[integrationId] };
+}
+
+export async function getIntegrationSecretPresence(integrationId: string, fields: readonly string[]) {
+  const values = await getIntegrationSecrets(integrationId);
+  return Object.fromEntries(fields.map((field) => [field, Boolean(values[field] || process.env[field]?.trim())]));
+}
+
+export async function deleteIntegrationSecrets(integrationId: string) {
+  const all = await readSecrets();
+  delete all[integrationId];
+  await writeSecrets(all);
+}
+
 export async function migrateLegacyIntegrationSecrets(integrations: { id: string; config?: Record<string, string> }[]) {
   const legacy = integrations.filter((integration) => integration.config && Object.keys(integration.config).length > 0);
   if (legacy.length === 0) return false;

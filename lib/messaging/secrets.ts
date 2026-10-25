@@ -11,13 +11,16 @@ type EncryptedEnvelope = { version: 1; iv: string; tag: string; data: string };
 export const messengerSecretFields: Record<MessengerChannel, readonly string[]> = {
   telegram: ["TELEGRAM_BOT_TOKEN", "TELEGRAM_WEBHOOK_SECRET"],
   whatsapp: ["WHATSAPP_ACCESS_TOKEN", "WHATSAPP_PHONE_NUMBER_ID", "WHATSAPP_BUSINESS_ACCOUNT_ID", "WHATSAPP_VERIFY_TOKEN", "WHATSAPP_APP_SECRET", "WHATSAPP_GRAPH_VERSION"],
-  max: ["MAX_BOT_TOKEN", "MAX_WEBHOOK_SECRET"]
+  max: ["MAX_BOT_TOKEN", "MAX_WEBHOOK_SECRET"],
+  instagram: ["INSTAGRAM_ACCESS_TOKEN", "INSTAGRAM_ACCOUNT_ID", "INSTAGRAM_VERIFY_TOKEN", "INSTAGRAM_APP_SECRET", "INSTAGRAM_GRAPH_VERSION"],
+  avito: ["AVITO_CLIENT_ID", "AVITO_CLIENT_SECRET", "AVITO_USER_ID", "AVITO_WEBHOOK_SECRET"]
 };
 
 const dataDir = process.env.CRM_DATA_DIR || path.join(process.cwd(), "data");
 const secretsFile = path.join(dataDir, "messaging-secrets.json");
 const tempSecretsFile = path.join(dataDir, "messaging-secrets.tmp.json");
 const supabaseKey = "messaging_secrets";
+const channelSupabaseKey = (channel: MessengerChannel) => `messaging_secrets_v2_${channel}`;
 
 function supabasePersistenceEnabled() {
   return process.env.CRM_FORCE_LOCAL !== "true" && Boolean(process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY);
@@ -79,8 +82,42 @@ async function writeStoredSecrets(value: StoredSecrets) {
   renameSync(tempSecretsFile, secretsFile);
 }
 
+async function readChannelSecrets(channel: MessengerChannel): Promise<SecretMap> {
+  if (!supabasePersistenceEnabled()) return (await readStoredSecrets())[channel] ?? {};
+  const { data, error } = await createServiceSupabaseClient()
+    .from("crm_app_state")
+    .select("value")
+    .eq("key", channelSupabaseKey(channel))
+    .maybeSingle();
+  if (error) throw error;
+  if (data?.value) {
+    if (!isEnvelope(data.value)) return {};
+    try {
+      return decrypt(data.value)[channel] ?? {};
+    } catch {
+      throw new Error(`Не удалось расшифровать настройки ${channel}. Проверьте AUTH_SECRET или введите все ключи канала заново.`);
+    }
+  }
+  return (await readStoredSecrets())[channel] ?? {};
+}
+
+async function writeChannelSecrets(channel: MessengerChannel, values: SecretMap) {
+  if (!supabasePersistenceEnabled()) {
+    const all = await readStoredSecrets();
+    all[channel] = values;
+    await writeStoredSecrets(all);
+    return;
+  }
+  const { error } = await createServiceSupabaseClient().from("crm_app_state").upsert({
+    key: channelSupabaseKey(channel),
+    value: encrypt({ [channel]: values }),
+    updated_at: new Date().toISOString()
+  }, { onConflict: "key" });
+  if (error) throw error;
+}
+
 export async function getMessengerSecrets(channel: MessengerChannel) {
-  const stored = (await readStoredSecrets())[channel] ?? {};
+  const stored = await readChannelSecrets(channel);
   return Object.fromEntries(messengerSecretFields[channel].map((field) => [field, stored[field] || process.env[field]?.trim() || ""])) as SecretMap;
 }
 
@@ -90,18 +127,25 @@ export async function getMessengerSecretPresence(channel: MessengerChannel) {
 }
 
 export async function saveMessengerSecrets(channel: MessengerChannel, updates: Record<string, string>) {
-  const all = await readStoredSecrets();
-  const current = all[channel] ?? {};
+  const current = await readChannelSecrets(channel);
   for (const field of messengerSecretFields[channel]) {
     const next = updates[field]?.trim();
     if (next) current[field] = next;
   }
-  all[channel] = current;
-  await writeStoredSecrets(all);
+  await writeChannelSecrets(channel, current);
   return getMessengerSecretPresence(channel);
 }
 
 export async function replaceMessengerSecrets(channel: MessengerChannel, values: Record<string, string>, options: { discardUnreadable?: boolean } = {}) {
+  const replacement = Object.fromEntries(
+    messengerSecretFields[channel]
+      .map((field) => [field, values[field]?.trim() || ""] as const)
+      .filter(([, value]) => Boolean(value))
+  );
+  if (supabasePersistenceEnabled()) {
+    await writeChannelSecrets(channel, replacement);
+    return getMessengerSecretPresence(channel);
+  }
   let all: StoredSecrets;
   try {
     all = await readStoredSecrets();
@@ -109,16 +153,16 @@ export async function replaceMessengerSecrets(channel: MessengerChannel, values:
     if (!options.discardUnreadable) throw error;
     all = {};
   }
-  all[channel] = Object.fromEntries(
-    messengerSecretFields[channel]
-      .map((field) => [field, values[field]?.trim() || ""] as const)
-      .filter(([, value]) => Boolean(value))
-  );
+  all[channel] = replacement;
   await writeStoredSecrets(all);
   return getMessengerSecretPresence(channel);
 }
 
 export async function deleteMessengerSecrets(channel: MessengerChannel) {
+  if (supabasePersistenceEnabled()) {
+    await writeChannelSecrets(channel, {});
+    return;
+  }
   const all = await readStoredSecrets();
   delete all[channel];
   await writeStoredSecrets(all);

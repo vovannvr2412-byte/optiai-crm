@@ -29,29 +29,18 @@ import {
   UsersRound,
   X
 } from "lucide-react";
-import { ROLE_PERMISSIONS, STAGES, VIEW_TITLES, type CrmAction, type CrmState, type CrmUser, type Lead, type ManualCallResult, type Role, type ViewId } from "@/lib/crm/types";
+import { ROLE_PERMISSIONS, STAGES, VIEW_TITLES, type CrmAction, type CrmState, type CrmUser, type DashboardMetrics, type Lead, type ManualCallResult, type Role, type ViewId } from "@/lib/crm/types";
 import { MessengerCenter } from "@/components/messenger-center";
-import type { MessengerConnection } from "@/lib/messaging/types";
+import type { MessengerChannel, MessengerConnection } from "@/lib/messaging/types";
 import { uploadMediaFile } from "@/lib/media/client";
 import { AccountPasswordForm } from "@/components/account-password-form";
 import type { CrmNotification } from "@/lib/notifications/store";
 import type { AutomationStatus } from "@/lib/automations/scheduler";
 
-type Metrics = {
-  leads: number;
-  calls: number;
-  deals: number;
-  payments: number;
-  mrr: number;
-  churn: number;
-  ltv: number;
-  conversion: number;
-};
-
 type Bootstrap = {
   currentUser: CrmUser;
   state: CrmState;
-  metrics: Metrics;
+  metrics: DashboardMetrics;
   notifications?: CrmNotification[];
   automationStatus?: AutomationStatus;
   auditLog?: {
@@ -108,6 +97,12 @@ const roleDescriptions: Record<Role, string> = {
   "Аккаунт-менеджер": "Видит действующих клиентов, продления и удержание."
 };
 
+function urlBase64ToUint8Array(value: string) {
+  const padding = "=".repeat((4 - value.length % 4) % 4);
+  const base64 = (value + padding).replace(/-/g, "+").replace(/_/g, "/");
+  return Uint8Array.from(window.atob(base64), (character) => character.charCodeAt(0));
+}
+
 function money(value: number) {
   return new Intl.NumberFormat("ru-RU").format(value) + " ₽";
 }
@@ -149,6 +144,7 @@ export function CrmApp() {
   const [selectedTaskId, setSelectedTaskId] = useState("");
   const [taskFilter, setTaskFilter] = useState<"open" | "done" | "cancelled">("open");
   const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [pushSubscribed, setPushSubscribed] = useState(false);
   const [toast, setToast] = useState("");
   const [loadingAction, setLoadingAction] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
@@ -168,13 +164,23 @@ export function CrmApp() {
     const data = (await response.json()) as Bootstrap;
     setBootstrap(data);
     const allowedForUser = ROLE_PERMISSIONS[data.currentUser.role];
-    setActiveView((current) => allowedForUser.includes(current) ? current : allowedForUser[0]);
+    const params = new URLSearchParams(window.location.search);
+    const linkedLeadId = params.get("lead");
+    const linkedView = params.get("view") as ViewId | null;
+    setActiveView((current) => linkedLeadId && data.state.leads.some((lead) => lead.id === linkedLeadId)
+      ? "pipeline"
+      : linkedView && allowedForUser.includes(linkedView)
+        ? linkedView
+        : allowedForUser.includes(current) ? current : allowedForUser[0]);
     const rememberedLeadId = window.sessionStorage.getItem("optiai:selectedLeadId") ?? "";
-    if (data.state.leads.some((lead) => lead.id === rememberedLeadId)) {
+    if (linkedLeadId && data.state.leads.some((lead) => lead.id === linkedLeadId)) {
+      setSelectedLeadId(linkedLeadId);
+    } else if (data.state.leads.some((lead) => lead.id === rememberedLeadId)) {
       setSelectedLeadId(rememberedLeadId);
     } else {
       setSelectedLeadId(data.state.leads[0]?.id ?? "");
     }
+    if (linkedLeadId || linkedView) window.history.replaceState({}, "", window.location.pathname);
     setAuthChecked(true);
     return true;
   }, []);
@@ -200,7 +206,16 @@ export function CrmApp() {
   }, [signedInUserId]);
 
   useEffect(() => {
+    if (!signedInUserId || !("serviceWorker" in navigator) || !("PushManager" in window)) return;
+    void navigator.serviceWorker.ready
+      .then((registration) => registration.pushManager.getSubscription())
+      .then((subscription) => setPushSubscribed(Boolean(subscription)))
+      .catch(() => setPushSubscribed(false));
+  }, [signedInUserId]);
+
+  useEffect(() => {
     if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
+    if ("serviceWorker" in navigator && "PushManager" in window) return;
     for (const notification of bootstrap?.notifications ?? []) {
       if (notification.readAt || browserNotifiedRef.current.has(notification.id)) continue;
       browserNotifiedRef.current.add(notification.id);
@@ -220,12 +235,57 @@ export function CrmApp() {
   }
 
   async function enableBrowserNotifications() {
-    if (typeof Notification === "undefined") {
-      setToast("Браузер не поддерживает системные уведомления.");
+    if (typeof Notification === "undefined" || !("serviceWorker" in navigator) || !("PushManager" in window)) {
+      setToast("Этот браузер не поддерживает фоновые push-уведомления.");
       return;
     }
-    const permission = await Notification.requestPermission();
-    setToast(permission === "granted" ? "Системные уведомления включены." : "Браузер не разрешил уведомления.");
+    try {
+      const permission = await Notification.requestPermission();
+      if (permission !== "granted") {
+        setToast("Браузер не разрешил уведомления.");
+        return;
+      }
+      const registration = await navigator.serviceWorker.register("/sw.js", { scope: "/" });
+      await navigator.serviceWorker.ready;
+      let configResponse = await fetch("/api/push/config", { cache: "no-store" });
+      let config = await configResponse.json() as { configured?: boolean; publicKey?: string; error?: string };
+      if (!config.configured) {
+        configResponse = await fetch("/api/push/config", { method: "POST" });
+        config = await configResponse.json() as typeof config;
+      }
+      if (!configResponse.ok || !config.publicKey) throw new Error(config.error || "Web Push ещё не настроен руководителем.");
+      const existing = await registration.pushManager.getSubscription();
+      const subscription = existing ?? await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(config.publicKey)
+      });
+      const saveResponse = await fetch("/api/push/subscriptions", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(subscription.toJSON())
+      });
+      const saved = await saveResponse.json().catch(() => null) as { error?: string } | null;
+      if (!saveResponse.ok) throw new Error(saved?.error || "Не удалось сохранить подписку устройства.");
+      setPushSubscribed(true);
+      setToast("Push-уведомления включены на этом устройстве.");
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : "Не удалось включить push-уведомления.");
+    }
+  }
+
+  async function disableBrowserNotifications() {
+    if (!("serviceWorker" in navigator) || !("PushManager" in window)) return;
+    try {
+      const registration = await navigator.serviceWorker.ready;
+      const subscription = await registration.pushManager.getSubscription();
+      if (subscription) {
+        const response = await fetch(`/api/push/subscriptions?endpoint=${encodeURIComponent(subscription.endpoint)}`, { method: "DELETE" });
+        if (!response.ok) throw new Error("Не удалось удалить push-подписку на сервере.");
+        await subscription.unsubscribe();
+      }
+      setPushSubscribed(false);
+      setToast("Push-уведомления отключены на этом устройстве.");
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : "Не удалось отключить push-уведомления.");
+    }
   }
 
   async function logout() {
@@ -503,13 +563,16 @@ export function CrmApp() {
   }
 
   const dashboardCards = [
-    ["Лиды", metrics.leads.toString(), "все каналы лидогенерации"],
-    ["Дозвоны", metrics.calls.toString(), "звонки с AI-разбором"],
-    ["Сделки", metrics.deals.toString(), `${metrics.conversion}% конверсия`],
-    ["MRR", money(metrics.mrr), "ежемесячная выручка"],
-    ["Churn", `${metrics.churn}%`, "отток клиентов"],
-    ["LTV", money(metrics.ltv), "средний жизненный цикл"]
+    ["Лиды", metrics.leads.toString(), "создано за всё время"],
+    ["Звонки", metrics.calls.toString(), "зафиксированные результаты"],
+    ["Сделки", metrics.deals.toString(), `${metrics.conversion}% лидов оплатили`],
+    ["Оплаты", money(metrics.paidRevenue), `${metrics.payments} успешных платежей`],
+    ["MRR", money(metrics.mrr), "активные месячные подписки"],
+    ["Churn", `${metrics.churn}%`, "отменённые подписки"],
+    ["LTV", money(metrics.ltv), "средняя выручка на клиента"],
+    ["Срок жизни", `${metrics.averageLifetimeMonths} мес.`, "среднее по подпискам"]
   ];
+  const maxChannelLeads = Math.max(1, ...metrics.channels.map((channel) => channel.leads));
   const todayKey = new Date().toISOString().slice(0, 10);
   const visibleTasks = [...state.tasks]
     .filter((task) => task.status === taskFilter)
@@ -658,7 +721,12 @@ export function CrmApp() {
                       </button>
                     ))}
                   </div>
-                  <button onClick={() => void enableBrowserNotifications()} className="ui-button ui-button-secondary mt-2 w-full"><Bell size={15} /> Включить уведомления устройства</button>
+                  <button
+                    onClick={() => void (pushSubscribed ? disableBrowserNotifications() : enableBrowserNotifications())}
+                    className="ui-button ui-button-secondary mt-2 w-full"
+                  >
+                    <Bell size={15} /> {pushSubscribed ? "Отключить push на этом устройстве" : "Включить фоновые push-уведомления"}
+                  </button>
                 </div>
               )}
             </div>
@@ -678,7 +746,7 @@ export function CrmApp() {
 
         {activeView === "dashboard" && (
           <section className="grid gap-4">
-            <div className="grid grid-cols-6 gap-3 max-2xl:grid-cols-3 max-lg:grid-cols-2 max-sm:grid-cols-1">
+            <div className="grid grid-cols-4 gap-3 max-2xl:grid-cols-3 max-lg:grid-cols-2 max-sm:grid-cols-1">
               {dashboardCards.map(([label, value, hint]) => (
                 <article key={label} className="crm-kpi">
                   <span className="text-xs font-semibold text-slate-500">{label}</span>
@@ -689,7 +757,7 @@ export function CrmApp() {
             </div>
 
             <div className="grid grid-cols-[1.25fr_.75fr] gap-4 max-xl:grid-cols-1">
-              <Panel title="AI-рекомендации на сегодня" subtitle="Утром менеджер получает звонки, задачи и следующий лучший шаг.">
+              <Panel title="Приоритеты на сегодня" subtitle="Просроченные и ближайшие задачи по реальным лидам.">
                 <div className="grid gap-3">
                   {state.tasks.length === 0 && <EmptyState title="Задач пока нет" text="Создайте первого лида или импортируйте заявки, чтобы CRM начала формировать задачи." />}
                   {state.tasks
@@ -707,21 +775,48 @@ export function CrmApp() {
                 </div>
               </Panel>
 
-              <Panel title="Каналы" subtitle="Instagram, Avito, Cold Call, Яндекс, Сайт, Telegram ads.">
+              <Panel title="Каналы" subtitle="Фактические лиды, сделки и оплаченная выручка по источникам.">
                 <div className="grid gap-2">
-                  {["Instagram", "Avito", "Cold Call", "Яндекс директ", "Сайт", "Telegram ads"].map((channel) => {
-                    const count = state.leads.filter((lead) => lead.sourceChannel === channel).length;
-                    return (
-                      <button key={channel} onClick={() => { setQuery(channel); setActiveView("pipeline"); }} className="rounded-lg border border-[#E5E7EB] bg-white p-3 text-left transition-colors hover:border-[#AEB9FF]">
+                  {metrics.channels.length === 0 && <EmptyState title="Источников пока нет" text="Статистика появится после создания первого реального лида." />}
+                  {metrics.channels.map((channel) => (
+                      <button key={channel.channel} onClick={() => { setQuery(channel.channel); setActiveView("pipeline"); }} className="rounded-lg border border-[#E5E7EB] bg-white p-3 text-left transition-colors hover:border-[#AEB9FF]">
                         <div className="flex items-center justify-between">
-                          <strong>{channel}</strong>
-                          <span className="text-sm text-slate-500">{count} лидов</span>
+                          <strong>{channel.channel}</strong>
+                          <span className="text-sm text-slate-500">{channel.leads} лидов · {channel.conversion}%</span>
                         </div>
+                        <span className="mt-1 block text-xs text-slate-500">{channel.deals} сделок · {money(channel.revenue)}</span>
                         <div className="mt-2 h-2 rounded-full bg-slate-100">
-                          <div className="h-2 rounded-full bg-[#536DFE]" style={{ width: `${Math.max(8, count * 24)}%` }} />
+                          <div className="h-2 rounded-full bg-[#536DFE]" style={{ width: `${(channel.leads / maxChannelLeads) * 100}%` }} />
                         </div>
                       </button>
-                    );
+                    ))}
+                </div>
+              </Panel>
+            </div>
+
+            <div className="grid grid-cols-[1.1fr_.9fr] gap-4 max-xl:grid-cols-1">
+              <Panel title="Конверсия воронки" subtitle="Доля лидов, которые действительно дошли до следующего этапа.">
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[660px] text-left text-sm">
+                    <thead className="text-xs text-slate-500"><tr><th className="pb-2">Переход</th><th className="pb-2">Вошли</th><th className="pb-2">Перешли</th><th className="pb-2 text-right">Конверсия</th></tr></thead>
+                    <tbody>{metrics.stageConversions.map((item) => (
+                      <tr key={`${item.from}-${item.to}`} className="border-t border-slate-100">
+                        <td className="py-2 font-semibold text-[#202939]">{STAGES[item.from]} → {STAGES[item.to]}</td>
+                        <td className="py-2 tabular-nums">{item.entered}</td><td className="py-2 tabular-nums">{item.advanced}</td>
+                        <td className="py-2 text-right font-semibold tabular-nums">{item.conversion}%</td>
+                      </tr>
+                    ))}</tbody>
+                  </table>
+                </div>
+              </Panel>
+              <Panel title="Команда" subtitle="Результаты считаются по назначенным лидам и фактическим платежам.">
+                <div className="grid gap-2">
+                  {metrics.managers.map((manager) => {
+                    const user = state.users.find((item) => item.id === manager.userId);
+                    return <div key={manager.userId} className="border-b border-slate-100 py-2 last:border-0">
+                      <div className="flex items-center justify-between gap-3"><strong className="text-sm">{user?.fullName ?? "Сотрудник"}</strong><span className="text-sm font-semibold tabular-nums">{money(manager.revenue)}</span></div>
+                      <span className="mt-1 block text-xs text-slate-500">{manager.calls} звонков · {manager.meetings} встреч · {manager.deals} сделок · {manager.conversion}%</span>
+                    </div>;
                   })}
                 </div>
               </Panel>
@@ -1087,10 +1182,10 @@ export function CrmApp() {
                         <Badge>{user.role}</Badge>
                       </div>
                       <div className="mt-3 grid grid-cols-4 gap-2 text-sm max-md:grid-cols-2">
-                        <span className="rounded-md bg-slate-50 p-2">{user.calls} звонков</span>
+                        <span className="rounded-md bg-slate-50 p-2">{metrics.managers.find((item) => item.userId === user.id)?.calls ?? 0} звонков</span>
                         <span className="rounded-md bg-slate-50 p-2">{user.meetings} встреч</span>
-                        <span className="rounded-md bg-slate-50 p-2">{money(user.revenue)}</span>
-                        <span className="rounded-md bg-slate-50 p-2">{state.leads.filter((lead) => lead.ownerId === user.id).length} сделок</span>
+                        <span className="rounded-md bg-slate-50 p-2">{money(metrics.managers.find((item) => item.userId === user.id)?.revenue ?? 0)}</span>
+                        <span className="rounded-md bg-slate-50 p-2">{metrics.managers.find((item) => item.userId === user.id)?.conversion ?? 0}% конверсия</span>
                       </div>
                       <div className="mt-3 flex flex-wrap gap-2">
                         <span className="rounded-md bg-[#EEF1FF] px-3 py-2 text-sm font-semibold text-[#4357D9]">Supabase Auth · персональный пароль</span>
@@ -1210,7 +1305,11 @@ export function CrmApp() {
       </main>
 
       {modal && (
-        <ModalShell onClose={() => setModal(null)}>
+        <ModalShell onClose={() => {
+          const refreshAfterClose = modal === "integration";
+          setModal(null);
+          if (refreshAfterClose) void load();
+        }}>
           {modal === "newUser" && <NewUserForm currentUser={currentUser} onSubmit={async (action) => { const ok = await runAction(action, "Приглашение отправлено сотруднику."); if (ok) setModal(null); }} />}
           {modal === "password" && <AccountPasswordForm onCancel={() => setModal(null)} onSuccess={() => { setBootstrap(null); setModal(null); }} />}
           {modal === "rescheduleTask" && state.tasks.find((task) => task.id === selectedTaskId) && (
@@ -1767,12 +1866,15 @@ const integrationFieldMap: Record<string, { name: string; label: string; type?: 
     { name: "clientSecret", label: "Client Secret" }
   ],
   sheets: [
-    { name: "spreadsheetId", label: "Spreadsheet ID" },
-    { name: "serviceAccountEmail", label: "Service Account Email", type: "email" }
+    { name: "GOOGLE_SPREADSHEET_ID", label: "Spreadsheet ID" },
+    { name: "GOOGLE_SHEET_RANGE", label: "Диапазон", placeholder: "CRM!A:V" },
+    { name: "GOOGLE_SERVICE_ACCOUNT_JSON", label: "Service Account JSON", type: "password" }
   ],
   metrika: [
-    { name: "counterId", label: "Counter ID" },
-    { name: "oauthToken", label: "OAuth Token" }
+    { name: "YANDEX_METRIKA_COUNTER_ID", label: "Counter ID" },
+    { name: "YANDEX_METRIKA_GOAL_ID", label: "Goal ID для оплаты" },
+    { name: "YANDEX_METRIKA_OAUTH_TOKEN", label: "OAuth Token", type: "password" },
+    { name: "YANDEX_METRIKA_USER_ID_SOURCE", label: "Источник UserId", placeholder: "lead_id / email / phone" }
   ],
   robokassa: [
     { name: "merchantLogin", label: "Merchant Login" },
@@ -1787,7 +1889,7 @@ const integrationFieldMap: Record<string, { name: string; label: string; type?: 
   ]
 };
 
-const messengerCredentialFields: Record<"telegram" | "whatsapp" | "max", { name: string; label: string; type?: string; placeholder: string }[]> = {
+const messengerCredentialFields: Record<MessengerChannel, { name: string; label: string; type?: string; placeholder: string }[]> = {
   telegram: [
     { name: "TELEGRAM_BOT_TOKEN", label: "Bot Token", type: "password", placeholder: "Токен от @BotFather" },
     { name: "TELEGRAM_WEBHOOK_SECRET", label: "Webhook Secret", type: "password", placeholder: "Придумайте сложную секретную строку" }
@@ -1803,6 +1905,19 @@ const messengerCredentialFields: Record<"telegram" | "whatsapp" | "max", { name:
   max: [
     { name: "MAX_BOT_TOKEN", label: "Bot Token", type: "password", placeholder: "Токен бота MAX" },
     { name: "MAX_WEBHOOK_SECRET", label: "Webhook Secret", type: "password", placeholder: "Секрет webhook" }
+  ],
+  instagram: [
+    { name: "INSTAGRAM_ACCESS_TOKEN", label: "Access Token", type: "password", placeholder: "Токен Instagram Professional" },
+    { name: "INSTAGRAM_ACCOUNT_ID", label: "Instagram Account ID", placeholder: "ID профессионального аккаунта" },
+    { name: "INSTAGRAM_VERIFY_TOKEN", label: "Verify Token", type: "password", placeholder: "Придумайте строку для проверки webhook" },
+    { name: "INSTAGRAM_APP_SECRET", label: "App Secret", type: "password", placeholder: "Секрет приложения Meta" },
+    { name: "INSTAGRAM_GRAPH_VERSION", label: "Graph API Version", placeholder: "Например, v26.0" }
+  ],
+  avito: [
+    { name: "AVITO_CLIENT_ID", label: "Client ID", placeholder: "Ключ приложения Avito" },
+    { name: "AVITO_CLIENT_SECRET", label: "Client Secret", type: "password", placeholder: "Секрет приложения Avito" },
+    { name: "AVITO_USER_ID", label: "User ID", placeholder: "Необязательно, определяется автоматически" },
+    { name: "AVITO_WEBHOOK_SECRET", label: "Webhook Secret", type: "password", placeholder: "Придумайте сложную секретную строку" }
   ]
 };
 
@@ -1812,9 +1927,10 @@ function IntegrationForm({ integration, onSubmit }: { integration?: CrmState["in
   }
 
   const currentIntegration = integration;
-  if (currentIntegration.id === "telegram" || currentIntegration.id === "whatsapp" || currentIntegration.id === "max") {
+  if (currentIntegration.id === "telegram" || currentIntegration.id === "whatsapp" || currentIntegration.id === "max" || currentIntegration.id === "instagram" || currentIntegration.id === "avito") {
     return <MessengerIntegrationForm channel={currentIntegration.id} />;
   }
+  if (currentIntegration.id === "sheets" || currentIntegration.id === "metrika") return <ExternalIntegrationForm integration={currentIntegration} />;
   const fields = integrationFieldMap[currentIntegration.id] ?? [
     { name: "apiKey", label: "API Key" },
     { name: "webhookUrl", label: "Webhook URL" }
@@ -1848,12 +1964,112 @@ function IntegrationForm({ integration, onSubmit }: { integration?: CrmState["in
   );
 }
 
-function MessengerIntegrationForm({ channel }: { channel: "telegram" | "whatsapp" | "max" }) {
+type ExternalIntegrationSummary = {
+  id: "sheets" | "metrika";
+  name: string;
+  configured: boolean;
+  configuredFields: Record<string, boolean>;
+  lastRun?: { status?: string; started_at?: string; records_read?: number; records_written?: number; error?: string } | null;
+};
+
+function ExternalIntegrationForm({ integration }: { integration: CrmState["integrations"][number] }) {
+  const id = integration.id as "sheets" | "metrika";
+  const [summary, setSummary] = useState<ExternalIntegrationSummary | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState<"save" | "check" | "sync" | "delete" | "">("");
+  const [message, setMessage] = useState("");
+  const fields = integrationFieldMap[id];
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const response = await fetch(`/api/integrations/${id}`, { cache: "no-store" });
+      const data = await response.json() as { integration?: ExternalIntegrationSummary; error?: string };
+      if (!response.ok) throw new Error(data.error || "Не удалось получить состояние интеграции.");
+      setSummary(data.integration ?? null);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Не удалось получить состояние интеграции.");
+    } finally {
+      setLoading(false);
+    }
+  }, [id]);
+
+  useEffect(() => {
+    // The form state is synchronized with the protected server-side integration store.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void load();
+  }, [load]);
+
+  async function request(mode: "check" | "sync" | "delete") {
+    setBusy(mode);
+    setMessage("");
+    try {
+      const response = await fetch(`/api/integrations/${id}${mode === "delete" ? "" : `/${mode}`}`, { method: mode === "delete" ? "DELETE" : "POST" });
+      const data = await response.json() as { integration?: ExternalIntegrationSummary; message?: string; error?: string };
+      if (data.integration) setSummary(data.integration);
+      if (!response.ok) throw new Error(data.error || "Операция не выполнена.");
+      setMessage(data.message || "Операция выполнена.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Операция не выполнена.");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function save(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const config = Object.fromEntries([...new FormData(form).entries()].map(([key, value]) => [key, String(value)]).filter(([, value]) => value.trim()));
+    if (!Object.keys(config).length) { setMessage("Введите хотя бы одно новое значение."); return; }
+    setBusy("save");
+    setMessage("");
+    try {
+      const response = await fetch(`/api/integrations/${id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ config }) });
+      const data = await response.json() as { integration?: ExternalIntegrationSummary; message?: string; error?: string };
+      if (data.integration) setSummary(data.integration);
+      if (!response.ok) throw new Error(data.error || "Не удалось сохранить настройки.");
+      form.reset();
+      setMessage(data.message || "Подключение проверено и сохранено.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Не удалось сохранить настройки.");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  return <form onSubmit={save} className="grid gap-4">
+    <div><h2 className="pr-12 text-xl font-bold text-[#202939]">{integration.name}</h2><p className="mt-1 text-sm text-slate-600">{integration.description}. Ключи шифруются и не возвращаются в браузер.</p></div>
+    {loading ? <p className="text-sm text-slate-500">Проверяем состояние...</p> : <div className="grid grid-cols-2 gap-3 max-sm:grid-cols-1">
+      <div className="rounded-lg border border-[#E5E7EB] p-3"><span className="text-xs text-slate-500">Настройка</span><strong className="mt-1 block">{summary?.configured ? "Ключи сохранены" : "Не настроено"}</strong></div>
+      <div className="rounded-lg border border-[#E5E7EB] p-3"><span className="text-xs text-slate-500">Последний обмен</span><strong className="mt-1 block">{summary?.lastRun?.started_at ? new Date(summary.lastRun.started_at).toLocaleString("ru-RU") : "Ещё не выполнялся"}</strong></div>
+    </div>}
+    <div className="grid gap-3">{fields.map((field) => <label key={field.name} className="ui-label">
+      <span className="flex items-center justify-between gap-3"><span>{field.label}</span><span className={summary?.configuredFields[field.name] ? "text-xs font-semibold text-emerald-700" : "text-xs text-slate-400"}>{summary?.configuredFields[field.name] ? "Сохранено" : "Не задано"}</span></span>
+      {field.name === "GOOGLE_SERVICE_ACCOUNT_JSON"
+        ? <textarea name={field.name} rows={5} className="ui-field resize-y font-mono text-xs" placeholder={summary?.configuredFields[field.name] ? "Оставьте пустым без изменений" : "Вставьте содержимое JSON-файла сервисного аккаунта"} />
+        : field.name === "YANDEX_METRIKA_USER_ID_SOURCE"
+          ? <select name={field.name} className="ui-field" defaultValue="lead_id"><option value="lead_id">CRM ID лида</option><option value="email">Email</option><option value="phone">Телефон</option></select>
+          : <input name={field.name} type={field.type ?? "text"} className="ui-field" placeholder={summary?.configuredFields[field.name] ? "Оставьте пустым без изменений" : field.placeholder} autoComplete="new-password" />}
+    </label>)}</div>
+    {summary?.lastRun?.error && <div className="rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">{summary.lastRun.error}</div>}
+    {message && <div className="rounded-lg border border-[#DCE2EA] bg-slate-50 p-3 text-sm text-slate-700">{message}</div>}
+    <div className="flex flex-wrap gap-2">
+      <button disabled={Boolean(busy)} className="ui-button ui-button-primary">{busy === "save" ? "Проверяем..." : "Сохранить и проверить"}</button>
+      <button type="button" disabled={Boolean(busy) || !summary?.configured} onClick={() => void request("check")} className="ui-button ui-button-secondary">{busy === "check" ? "Проверяем..." : "Проверить"}</button>
+      <button type="button" disabled={Boolean(busy) || !summary?.configured} onClick={() => void request("sync")} className="ui-button ui-button-primary">{busy === "sync" ? "Синхронизируем..." : "Синхронизировать"}</button>
+      <button type="button" disabled={Boolean(busy)} onClick={() => void request("delete")} className="ui-button ui-button-secondary">{busy === "delete" ? "Удаляем..." : "Удалить ключи"}</button>
+    </div>
+    <p className="text-xs leading-5 text-slate-500">{id === "sheets" ? "Используйте отдельный лист CRM. Таблица должна быть доступна email сервисного аккаунта с правом редактора." : "Для атрибуции на сайте должен передаваться тот же UserId, который выбран в настройке: lead_id, email или phone."}</p>
+  </form>;
+}
+
+function MessengerIntegrationForm({ channel }: { channel: MessengerChannel }) {
   const [connection, setConnection] = useState<MessengerConnection | null>(null);
   const [loading, setLoading] = useState(true);
   const [checking, setChecking] = useState(false);
   const [saving, setSaving] = useState(false);
   const [resetting, setResetting] = useState(false);
+  const [syncing, setSyncing] = useState(false);
   const [message, setMessage] = useState("");
 
   const loadConnection = useCallback(async () => {
@@ -1937,6 +2153,18 @@ function MessengerIntegrationForm({ channel }: { channel: "telegram" | "whatsapp
     }
   }
 
+  async function syncHistory() {
+    setSyncing(true); setMessage("");
+    try {
+      const response = await fetch(`/api/messaging/connections/${channel}/sync`, { method: "POST" });
+      const data = await response.json() as { read?: number; imported?: number; error?: string };
+      if (!response.ok) throw new Error(data.error || "Не удалось синхронизировать историю.");
+      setMessage(`Прочитано сообщений: ${data.read ?? 0}. Добавлено новых: ${data.imported ?? 0}.`);
+      await loadConnection();
+    } catch (error) { setMessage(error instanceof Error ? error.message : "Не удалось синхронизировать историю."); }
+    finally { setSyncing(false); }
+  }
+
   const statusLabel = connection?.status === "connected" ? "Подключён" : connection?.status === "error" ? "Ошибка" : connection?.status === "needs_setup" ? "Требует проверки" : "Не настроен";
   const webhookUrl = typeof window === "undefined" ? `/api/messaging/webhooks/${channel}` : `${window.location.origin}/api/messaging/webhooks/${channel}`;
 
@@ -1951,7 +2179,7 @@ function MessengerIntegrationForm({ channel }: { channel: "telegram" | "whatsapp
           <div className="grid grid-cols-2 gap-3 max-sm:grid-cols-1">
             <div className="rounded-lg border border-[#E5E7EB] p-3"><span className="text-xs text-slate-500">Состояние</span><strong className="mt-1 block">{statusLabel}</strong></div>
             <div className="rounded-lg border border-[#E5E7EB] p-3"><span className="text-xs text-slate-500">Webhook-защита</span><strong className="mt-1 block">{connection?.webhookConfigured ? "Настроена" : "Не настроена"}</strong></div>
-            {channel === "telegram" && connection?.externalAccountId && <div className="col-span-2 rounded-lg border border-[#E5E7EB] p-3 max-sm:col-span-1"><span className="text-xs text-slate-500">Подключённый бот</span><strong className="mt-1 block">{connection.externalAccountUsername ? `@${connection.externalAccountUsername}` : `Telegram Bot ${connection.externalAccountId}`}</strong></div>}
+            {connection?.externalAccountId && <div className="col-span-2 rounded-lg border border-[#E5E7EB] p-3 max-sm:col-span-1"><span className="text-xs text-slate-500">Подключённый аккаунт</span><strong className="mt-1 block">{connection.externalAccountUsername || connection.externalAccountId}</strong></div>}
           </div>
           <div className="grid gap-3">
             {messengerCredentialFields[channel].map((field) => {
@@ -1982,6 +2210,7 @@ function MessengerIntegrationForm({ channel }: { channel: "telegram" | "whatsapp
       <div className="flex flex-wrap gap-2">
         <button type="submit" disabled={saving || resetting} className="ui-button ui-button-primary">{saving ? "Проверяем и подключаем..." : channel === "telegram" && connection?.externalAccountId ? "Заменить бота" : "Сохранить ключи"}</button>
         <button type="button" disabled={checking || !connection?.configured} onClick={() => void check()} className="ui-button ui-button-primary">{checking ? "Проверяем..." : "Проверить подключение"}</button>
+        {channel === "avito" && <button type="button" disabled={syncing || !connection?.configured} onClick={() => void syncHistory()} className="ui-button ui-button-secondary">{syncing ? "Загружаем..." : "Загрузить историю"}</button>}
         <button type="button" disabled={resetting || saving} onClick={() => void resetSavedSettings()} className="ui-button ui-button-secondary">{resetting ? "Удаляем..." : "Удалить ключи CRM"}</button>
         <a href="/messengers-setup" target="_blank" rel="noreferrer" className="ui-button ui-button-secondary">Инструкция</a>
       </div>

@@ -475,7 +475,13 @@ export async function listConnections(): Promise<MessengerConnection[]> {
       };
     });
   }
-  const presence = await Promise.all(messengerChannels.map((channel) => getMessengerSecretPresence(channel)));
+  const presence = await Promise.all(messengerChannels.map(async (channel) => {
+    try {
+      return await getMessengerSecretPresence(channel);
+    } catch {
+      return {};
+    }
+  }));
   return messengerChannels.map((channel, index) => connectionFromConfiguration(channel, saved.find((item) => item.channel === channel), presence[index]));
 }
 

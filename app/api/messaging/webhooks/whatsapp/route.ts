@@ -1,7 +1,8 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
 import { normalizeWhatsAppStatuses, whatsappAdapter } from "@/lib/messaging/providers/whatsapp";
-import { saveIncomingMessage, updateMessageStatusByExternalId } from "@/lib/messaging/store";
+import { updateMessageStatusByExternalId } from "@/lib/messaging/store";
+import { saveIncomingMessageAndNotify } from "@/lib/messaging/incoming";
 import { getMessengerSecrets } from "@/lib/messaging/secrets";
 
 export async function GET(request: Request) {
@@ -26,7 +27,7 @@ export async function POST(request: Request) {
     const messages = whatsappAdapter.normalizeWebhook(payload);
     const statuses = normalizeWhatsAppStatuses(payload);
     await Promise.all([
-      ...messages.map(saveIncomingMessage),
+      ...messages.map(saveIncomingMessageAndNotify),
       ...statuses.map((item) => updateMessageStatusByExternalId("whatsapp", item.externalMessageId, item.status, item.errorReason))
     ]);
     return NextResponse.json({ ok: true });

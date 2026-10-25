@@ -2,12 +2,13 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getSessionUserId } from "@/lib/auth/session";
 import { publicSiteUrl } from "@/lib/auth/urls";
-import { getCrmStateAsync } from "@/lib/crm/store";
+import { getCrmStateAsync, setIntegrationStatusAsync } from "@/lib/crm/store";
 import { isMessengerChannel, safeProviderError } from "@/lib/messaging/config";
 import { archiveExistingTelegramMedia } from "@/lib/messaging/media-archive";
 import { deleteTelegramWebhook, inspectTelegramBot, setTelegramWebhook } from "@/lib/messaging/providers/telegram";
+import { providerFor } from "@/lib/messaging/providers";
 import { deleteMessengerSecrets, getMessengerSecrets, messengerSecretFields, replaceMessengerSecrets, saveMessengerSecrets } from "@/lib/messaging/secrets";
-import { activateTelegramBot, assertTelegramReplacementSchema, listConnections, resetConnectionStatus } from "@/lib/messaging/store";
+import { activateTelegramBot, assertTelegramReplacementSchema, listConnections, resetConnectionStatus, saveConnectionCheck } from "@/lib/messaging/store";
 import { recordSecurityAuditSafe } from "@/lib/security/audit";
 import type { MessengerConnection } from "@/lib/messaging/types";
 
@@ -108,6 +109,7 @@ export async function PUT(request: Request, context: { params: Promise<{ channel
         mediaArchived: mediaArchive.archived,
         mediaArchiveFailed: mediaArchive.failed
       });
+      await setIntegrationStatusAsync(channel, "connected");
       const botLabel = profile.username ? `@${profile.username}` : profile.displayName;
       const reconnectMessage = replacement.conversationsAwaitingStart
         ? ` ${replacement.conversationsAwaitingStart} диалогов сохранили историю и ожидают /start у нового бота.`
@@ -127,11 +129,32 @@ export async function PUT(request: Request, context: { params: Promise<{ channel
       });
     }
 
-    await saveMessengerSecrets(channel, sanitized);
+    let replacedUnreadableSecrets = false;
+    try {
+      await saveMessengerSecrets(channel, sanitized);
+    } catch (error) {
+      if (!(error instanceof Error) || !error.message.includes("Не удалось расшифровать настройки")) throw error;
+      await replaceMessengerSecrets(channel, sanitized, { discardUnreadable: true });
+      replacedUnreadableSecrets = true;
+    }
     await resetConnectionStatus(channel);
-    const connection = (await listConnections()).find((item) => item.channel === channel);
+    const adapter = providerFor(channel);
+    const result = await adapter.checkConnection();
+    if (!result.ok) {
+      const connection = await saveConnectionCheck(channel, result);
+      await setIntegrationStatusAsync(channel, "error");
+      return NextResponse.json({ connection, error: result.message }, { status: 424 });
+    }
+    const webhook = new URL(`/api/messaging/webhooks/${channel}`, publicSiteUrl(request));
+    if (channel === "avito") webhook.searchParams.set("secret", (await getMessengerSecrets("avito")).AVITO_WEBHOOK_SECRET || "");
+    if (webhook.protocol === "https:" && adapter.configureWebhook) await adapter.configureWebhook(webhook.toString());
+    const connection = await saveConnectionCheck(channel, result);
+    await setIntegrationStatusAsync(channel, "connected");
     await recordSecurityAuditSafe(owner, "messenger.credentials_updated", "messenger_connection", channel, { fields: Object.keys(sanitized).sort() });
-    return NextResponse.json({ connection, message: "Настройки сохранены в зашифрованном серверном хранилище." });
+    return NextResponse.json({
+      connection,
+      message: `Подключение проверено, ключи сохранены.${webhook.protocol === "https:" && adapter.configureWebhook ? " Webhook зарегистрирован." : " Для webhook нужен публичный HTTPS-адрес."}${replacedUnreadableSecrets ? " Недоступные старые ключи этого канала заменены." : ""}`
+    });
   } catch (error) {
     return NextResponse.json({ error: safeProviderError(error) || "Не удалось сохранить настройки." }, { status: 500 });
   }
@@ -145,6 +168,7 @@ export async function DELETE(_request: Request, context: { params: Promise<{ cha
   try {
     await deleteMessengerSecrets(channel);
     await resetConnectionStatus(channel);
+    await setIntegrationStatusAsync(channel, "needs_setup");
     const connection = (await listConnections()).find((item) => item.channel === channel);
     await recordSecurityAuditSafe(owner, "messenger.credentials_deleted", "messenger_connection", channel);
     return NextResponse.json({ connection, message: "Настройки CRM удалены. Переменные Vercel, если они заданы, снова используются как резерв." });

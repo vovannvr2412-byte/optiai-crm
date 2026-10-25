@@ -172,6 +172,22 @@ export type CrmState = {
   integrations: Integration[];
 };
 
+export type DashboardMetrics = {
+  leads: number;
+  calls: number;
+  deals: number;
+  payments: number;
+  paidRevenue: number;
+  mrr: number;
+  churn: number;
+  ltv: number;
+  averageLifetimeMonths: number;
+  conversion: number;
+  stageConversions: { from: number; to: number; entered: number; advanced: number; conversion: number }[];
+  channels: { channel: string; leads: number; deals: number; revenue: number; conversion: number }[];
+  managers: { userId: string; calls: number; meetings: number; deals: number; revenue: number; conversion: number }[];
+};
+
 export type LeadUpdate = Partial<Omit<Lead, "id" | "status" | "score" | "temperature" | "createdAt">>;
 
 export type CrmAction =

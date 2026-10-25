@@ -34,6 +34,7 @@ const normalized = await sql("supabase/migrations/0004_normalized_crm_and_auth.s
 const security = await sql("supabase/migrations/0005_single_company_security.sql");
 const automations = await sql("supabase/migrations/0006_tasks_and_automations.sql");
 const telegramReplacement = await sql("supabase/migrations/0007_telegram_bot_replacement.sql");
+const externalIntegrations = await sql("supabase/migrations/0008_external_integrations_and_web_push.sql");
 const seed = await sql("supabase/seed.sql");
 
 await db.exec(initial);
@@ -66,6 +67,8 @@ await db.exec(automations);
 await db.exec(automations);
 await db.exec(telegramReplacement);
 await db.exec(telegramReplacement);
+await db.exec(externalIntegrations);
+await db.exec(externalIntegrations);
 
 const upgradedAssignments = await db.query(`
   select id, status, started_at::text as started_at
@@ -157,6 +160,12 @@ assert.equal(telegramConnectionColumns.rows.length, 1);
 const reconnectColumn = await db.query("select is_nullable, column_default from information_schema.columns where table_schema = 'public' and table_name = 'messenger_conversations' and column_name = 'needs_reconnect'");
 assert.equal(reconnectColumn.rows[0].is_nullable, "NO");
 assert.match(String(reconnectColumn.rows[0].column_default), /false/i);
+const externalConnections = await db.query("select channel from public.messenger_connections where channel in ('instagram', 'avito') order by channel");
+assert.deepEqual(externalConnections.rows, [{ channel: "avito" }, { channel: "instagram" }]);
+const productionTables = await db.query("select table_name from information_schema.tables where table_schema = 'public' and table_name in ('integration_sync_runs', 'integration_export_events', 'push_subscriptions')");
+assert.equal(productionTables.rows.length, 3);
+const pushPolicies = await db.query("select policyname from pg_policies where schemaname = 'public' and tablename = 'push_subscriptions'");
+assert(pushPolicies.rows.some((row) => row.policyname === "users read own push subscriptions"));
 
 const eventArguments = [
   "migration-test:event-1",
@@ -182,5 +191,5 @@ await db.query("update public.automation_events set status = 'completed', proces
 const completedClaim = await db.query(claimSql, eventArguments);
 assert.equal(completedClaim.rows.length, 0);
 
-console.log("Migrations OK: schema is repeatable, Telegram bot replacement is tracked, legacy warmups are repaired, scheduler events are idempotent, RLS policies exist, task statuses work, and normalized CRM state round-trips correctly.");
+console.log("Migrations OK: schema is repeatable, messenger channels and Web Push are ready, sync exports are idempotent, scheduler events are idempotent, RLS policies exist, and normalized CRM state round-trips correctly.");
 await db.close();

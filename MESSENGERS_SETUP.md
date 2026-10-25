@@ -4,7 +4,7 @@
 
 ## Общая настройка
 
-1. Выполните миграции `0002_messaging_center.sql`, `0003_media_storage.sql` и `0007_telegram_bot_replacement.sql` в Supabase SQL Editor по порядку.
+1. Выполните миграции `0002_messaging_center.sql`, `0003_media_storage.sql`, `0007_telegram_bot_replacement.sql` и `0008_external_integrations_and_web_push.sql` в Supabase SQL Editor по порядку.
 2. Войдите как руководитель и откройте «Автоматизации» → нужный мессенджер → «Настроить».
 3. Введите ключи в форму и нажмите «Сохранить ключи», затем «Проверить подключение».
 4. Зарегистрируйте показанный в форме Webhook URL в кабинете провайдера.
@@ -63,6 +63,22 @@ Telegram не позволяет новому боту первым начать
 4. Проверьте подключение из CRM и напишите боту.
 
 Для production MAX требует HTTPS webhook на порту 443 и доверенный TLS-сертификат. Актуальный API использует домен `platform-api2.max.ru`.
+
+## Instagram
+
+1. Используйте профессиональный Instagram-аккаунт и приложение Meta с Instagram Login.
+2. Получите долгоживущий Access Token с правами `instagram_business_basic` и `instagram_business_manage_messages`, а также Instagram Account ID.
+3. В Meta Webhooks задайте callback `https://ВАШ-ДОМЕН/api/messaging/webhooks/instagram`, тот же Verify Token из CRM и подпишитесь на события сообщений.
+4. В CRM заполните Access Token, Account ID, Verify Token и App Secret. При сохранении CRM проверит аккаунт и подпишет приложение на события аккаунта.
+5. Клиент должен первым написать профессиональному аккаунту. После webhook диалог появится в центре сообщений.
+
+## Avito
+
+1. Создайте приложение в кабинете Avito API и получите Client ID и Client Secret с доступом к Messenger API.
+2. Придумайте Webhook Secret и заполните форму Avito в CRM. User ID можно не указывать: CRM запросит его у `/core/v1/accounts/self`.
+3. На production CRM зарегистрирует защищённый webhook автоматически. Секрет добавляется в callback URL и проверяется при каждом входящем запросе.
+4. Нажмите «Загрузить историю», чтобы получить текущие чаты и сообщения. Повторный импорт не создаёт дубли.
+5. Из CRM можно отправлять текст и изображения. Видео не поддерживается Messenger API Avito и явно отклоняется интерфейсом провайдера.
 
 ## Проверка
 

@@ -14,8 +14,8 @@ type Props = {
   onCreateLead: () => void;
 };
 
-const channelNames: Record<MessengerChannel, string> = { telegram: "Telegram", whatsapp: "WhatsApp", max: "MAX" };
-const channelMarks: Record<MessengerChannel, string> = { telegram: "TG", whatsapp: "WA", max: "MAX" };
+const channelNames: Record<MessengerChannel, string> = { telegram: "Telegram", whatsapp: "WhatsApp", max: "MAX", instagram: "Instagram", avito: "Avito" };
+const channelMarks: Record<MessengerChannel, string> = { telegram: "TG", whatsapp: "WA", max: "MAX", instagram: "IG", avito: "AV" };
 
 function fullDate(value: string) {
   return new Intl.DateTimeFormat("ru-RU", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }).format(new Date(value));
@@ -226,7 +226,7 @@ export function MessengerCenter({ state, currentUser, onOpenLead, onCreateLead }
           </div>
           <div className="mt-2 flex items-center gap-2">
             <select value={filter} onChange={(event) => setFilter(event.target.value as typeof filter)} className="ui-field min-w-0 flex-1" aria-label="Фильтр диалогов">
-              <option value="all">Все диалоги</option><option value="telegram">Telegram</option><option value="whatsapp">WhatsApp</option><option value="max">MAX</option>
+              <option value="all">Все диалоги</option><option value="telegram">Telegram</option><option value="whatsapp">WhatsApp</option><option value="max">MAX</option><option value="instagram">Instagram</option><option value="avito">Avito</option>
               <option value="unread">Непрочитанные</option><option value="mine">Мои диалоги</option><option value="unassigned">Без ответственного</option>
             </select>
             <button onClick={() => void loadConversations(false, query)} className="ui-button ui-button-secondary ui-icon-button" title="Обновить диалоги" aria-label="Обновить диалоги"><RefreshCw size={16} /></button>

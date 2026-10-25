@@ -6,6 +6,7 @@ import { safeProviderError } from "@/lib/messaging/config";
 import type { OutgoingMediaAttachment } from "@/lib/messaging/types";
 import { createNotification } from "@/lib/notifications/store";
 import { createServiceSupabaseClient } from "@/lib/supabase/server";
+import { syncScheduledExternalIntegrations } from "@/lib/external-integrations";
 import { assignWarmupSequence } from "./warmup";
 
 type SchedulerStats = {
@@ -376,10 +377,11 @@ export async function runAutomationScheduler(source = "vercel_cron") {
     await runWarmupSteps(stats);
     await runDueTaskNotifications(stats);
     await runRenewalReminders(stats);
+    const integrations = await syncScheduledExternalIntegrations();
     const finishedAt = new Date().toISOString();
-    const { error } = await supabase.from("automation_runs").update({ status: "completed", stats, finished_at: finishedAt }).eq("id", run.id);
+    const { error } = await supabase.from("automation_runs").update({ status: "completed", stats: { ...stats, integrations }, finished_at: finishedAt }).eq("id", run.id);
     if (error) throw error;
-    return { runId: String(run.id), startedAt: String(run.started_at), finishedAt, stats };
+    return { runId: String(run.id), startedAt: String(run.started_at), finishedAt, stats, integrations };
   } catch (error) {
     await supabase.from("automation_runs").update({
       status: "failed",

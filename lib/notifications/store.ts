@@ -1,12 +1,13 @@
 import { createServiceSupabaseClient } from "@/lib/supabase/server";
 import { supabasePersistenceEnabled } from "@/lib/crm/store";
+import { sendPushToUser } from "@/lib/push/store";
 
 export type CrmNotification = {
   id: string;
   userId: string;
   leadId?: string;
   taskId?: string;
-  type: "task_due" | "callback" | "warmup" | "renewal" | "automation" | "system";
+  type: "task_due" | "callback" | "warmup" | "renewal" | "automation" | "system" | "message";
   title: string;
   body: string;
   eventKey: string;
@@ -54,7 +55,7 @@ export async function createNotification(input: {
   eventKey: string;
 }) {
   if (!supabasePersistenceEnabled()) return;
-  const { error } = await createServiceSupabaseClient().from("crm_notifications").upsert({
+  const { data, error } = await createServiceSupabaseClient().from("crm_notifications").upsert({
     user_id: input.userId,
     lead_id: input.leadId ?? null,
     task_id: input.taskId ?? null,
@@ -62,8 +63,16 @@ export async function createNotification(input: {
     title: input.title,
     body: input.body,
     event_key: input.eventKey
-  }, { onConflict: "event_key", ignoreDuplicates: true });
+  }, { onConflict: "event_key", ignoreDuplicates: true }).select("id").maybeSingle();
   if (error) throw error;
+  if (data) {
+    await sendPushToUser(input.userId, {
+      title: input.title,
+      body: input.body,
+      url: input.leadId ? `/?lead=${encodeURIComponent(input.leadId)}` : "/?view=tasks",
+      tag: input.eventKey
+    }).catch((pushError) => console.error("Push notification failed", { message: pushError instanceof Error ? pushError.message : String(pushError) }));
+  }
 }
 
 export async function markNotificationRead(userId: string, notificationId?: string) {

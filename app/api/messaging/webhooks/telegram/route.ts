@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { telegramAdapter } from "@/lib/messaging/providers/telegram";
 import { archiveTelegramAttachments } from "@/lib/messaging/media-archive";
-import { listConnections, saveIncomingMessage } from "@/lib/messaging/store";
+import { listConnections } from "@/lib/messaging/store";
+import { saveIncomingMessageAndNotify } from "@/lib/messaging/incoming";
 import { getMessengerSecrets } from "@/lib/messaging/secrets";
 
 export async function POST(request: Request) {
@@ -27,7 +28,7 @@ export async function POST(request: Request) {
         }
       }
       const eventPrefix = botExternalAccountId ?? "telegram";
-      return saveIncomingMessage({
+      return saveIncomingMessageAndNotify({
         ...message,
         eventId: `${eventPrefix}:${message.eventId}`,
         externalMessageId: `${eventPrefix}:${message.externalMessageId}`,

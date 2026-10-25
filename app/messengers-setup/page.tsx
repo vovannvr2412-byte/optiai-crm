@@ -13,6 +13,16 @@ const channels = [
     name: "MAX",
     env: "MAX_BOT_TOKEN, MAX_WEBHOOK_SECRET",
     steps: "Создайте бота на платформе MAX и зарегистрируйте HTTPS webhook /api/messaging/webhooks/max через POST /subscriptions на platform-api2.max.ru."
+  },
+  {
+    name: "Instagram",
+    env: "INSTAGRAM_ACCESS_TOKEN, INSTAGRAM_ACCOUNT_ID, INSTAGRAM_VERIFY_TOKEN, INSTAGRAM_APP_SECRET",
+    steps: "Подключите профессиональный аккаунт через Meta, задайте callback /api/messaging/webhooks/instagram и подпишитесь на события сообщений."
+  },
+  {
+    name: "Avito",
+    env: "AVITO_CLIENT_ID, AVITO_CLIENT_SECRET, AVITO_USER_ID, AVITO_WEBHOOK_SECRET",
+    steps: "Создайте приложение Avito с Messenger API. CRM проверит аккаунт, зарегистрирует webhook и сможет загрузить историю чатов."
   }
 ];
 
@@ -32,7 +42,7 @@ export default function MessengersSetupPage() {
         ))}
       </div>
       <section className="mt-6 border-l-4 border-[#536DFE] bg-[#EEF1FF] p-4 text-sm leading-6 text-[#263264]">
-        Для production сначала выполните миграции `supabase/migrations/0002_messaging_center.sql` и `supabase/migrations/0003_media_storage.sql`. В Vercel обязательно сохраните постоянный `AUTH_SECRET`: он используется для шифрования ключей. Полная пошаговая инструкция находится в `MESSENGERS_SETUP.md` репозитория.
+        Для production выполните миграции центра сообщений, media storage и `0008_external_integrations_and_web_push.sql`. В Vercel обязательно сохраните постоянный `AUTH_SECRET`: он используется для шифрования ключей. Полная пошаговая инструкция находится в `MESSENGERS_SETUP.md` репозитория.
       </section>
     </main>
   );
