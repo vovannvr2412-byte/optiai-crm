@@ -84,18 +84,19 @@ export async function hasPushSubscription(userId: string) {
 }
 
 export async function sendPushToUser(userId: string, payload: PushPayload) {
-  if (!supabasePersistenceEnabled()) return { sent: 0, removed: 0 };
+  if (!supabasePersistenceEnabled()) return { sent: 0, removed: 0, failed: 0 };
   const config = await vapidConfiguration();
-  if (!config.publicKey || !config.privateKey || !config.subject) return { sent: 0, removed: 0 };
+  if (!config.publicKey || !config.privateKey || !config.subject) return { sent: 0, removed: 0, failed: 0 };
   webpush.setVapidDetails(config.subject, config.publicKey, config.privateKey);
   const supabase = createServiceSupabaseClient();
   const { data, error } = await supabase.from("push_subscriptions").select("id,endpoint,p256dh,auth").eq("user_id", userId);
   if (error) {
-    if (error.code === "42P01" || error.code === "PGRST205") return { sent: 0, removed: 0 };
+    if (error.code === "42P01" || error.code === "PGRST205") return { sent: 0, removed: 0, failed: 0 };
     throw error;
   }
   let sent = 0;
   let removed = 0;
+  let failed = 0;
   await Promise.all((data ?? []).map(async (row) => {
     try {
       await webpush.sendNotification({
@@ -109,9 +110,10 @@ export async function sendPushToUser(userId: string, payload: PushPayload) {
         await supabase.from("push_subscriptions").delete().eq("id", row.id);
         removed += 1;
       } else {
+        failed += 1;
         console.error("Web Push delivery failed", { userId, statusCode });
       }
     }
   }));
-  return { sent, removed };
+  return { sent, removed, failed };
 }

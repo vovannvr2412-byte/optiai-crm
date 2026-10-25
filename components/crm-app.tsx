@@ -104,6 +104,14 @@ function urlBase64ToUint8Array(value: string) {
   return Uint8Array.from(window.atob(base64), (character) => character.charCodeAt(0));
 }
 
+function subscriptionUsesKey(subscription: PushSubscription, publicKey: string) {
+  const activeKey = subscription.options.applicationServerKey;
+  if (!activeKey) return false;
+  const current = new Uint8Array(activeKey);
+  const expected = urlBase64ToUint8Array(publicKey);
+  return current.length === expected.length && current.every((value, index) => value === expected[index]);
+}
+
 function money(value: number) {
   return new Intl.NumberFormat("ru-RU").format(value) + " ₽";
 }
@@ -163,6 +171,7 @@ export function CrmApp() {
   const [taskFilter, setTaskFilter] = useState<"open" | "done" | "cancelled">("open");
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [pushSubscribed, setPushSubscribed] = useState(false);
+  const [testingPush, setTestingPush] = useState(false);
   const [toast, setToast] = useState("");
   const [loadingAction, setLoadingAction] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
@@ -171,6 +180,12 @@ export function CrmApp() {
   const [movingLeadIds, setMovingLeadIds] = useState<Set<string>>(() => new Set());
   const suppressLeadClickRef = useRef("");
   const browserNotifiedRef = useRef(new Set<string>());
+
+  useEffect(() => {
+    if (!toast) return;
+    const timer = window.setTimeout(() => setToast(""), 5200);
+    return () => window.clearTimeout(timer);
+  }, [toast]);
 
   const load = useCallback(async () => {
     const response = await fetch("/api/crm/bootstrap", { cache: "no-store" });
@@ -284,7 +299,12 @@ export function CrmApp() {
         config = await readApiJson<typeof config>(configResponse);
       }
       if (!configResponse.ok || !config.publicKey) throw new Error(config.error || "Web Push ещё не настроен руководителем.");
-      const existing = await registration.pushManager.getSubscription();
+      let existing = await registration.pushManager.getSubscription();
+      if (existing && !subscriptionUsesKey(existing, config.publicKey)) {
+        await fetch(`/api/push/subscriptions?endpoint=${encodeURIComponent(existing.endpoint)}`, { method: "DELETE" }).catch(() => null);
+        await existing.unsubscribe();
+        existing = null;
+      }
       const subscription = existing ?? await registration.pushManager.subscribe({
         userVisibleOnly: true,
         applicationServerKey: urlBase64ToUint8Array(config.publicKey)
@@ -295,9 +315,30 @@ export function CrmApp() {
       const saved = await readApiJsonOrNull<{ error?: string }>(saveResponse);
       if (!saveResponse.ok) throw new Error(saved?.error || "Не удалось сохранить подписку устройства.");
       setPushSubscribed(true);
-      setToast("Push-уведомления включены на этом устройстве.");
+      const testResult = await sendTestPush();
+      setToast(testResult.message || "Push-уведомления включены, тестовое сообщение отправлено.");
     } catch (error) {
       setToast(error instanceof Error ? error.message : "Не удалось включить push-уведомления.");
+    }
+  }
+
+  async function sendTestPush() {
+    const response = await fetch("/api/push/test", { method: "POST" });
+    const data = await readApiJson<{ message?: string; error?: string; sent?: number }>(response);
+    if (!response.ok || !data.sent) throw new Error(data.error || "Не удалось отправить тестовый push.");
+    return data;
+  }
+
+  async function testBrowserNotifications() {
+    if (testingPush) return;
+    setTestingPush(true);
+    try {
+      const result = await sendTestPush();
+      setToast(result.message || "Тестовое push-уведомление отправлено.");
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : "Не удалось отправить тестовый push.");
+    } finally {
+      setTestingPush(false);
     }
   }
 
@@ -368,7 +409,6 @@ export function CrmApp() {
         setSelectedLeadId("");
       }
       setToast(message);
-      window.setTimeout(() => setToast(""), 2800);
       return true;
     } catch {
       setToast("Сервер недоступен. Изменения не сохранены.");
@@ -757,6 +797,15 @@ export function CrmApp() {
                   >
                     <Bell size={15} /> {pushSubscribed ? "Отключить push на этом устройстве" : "Включить фоновые push-уведомления"}
                   </button>
+                  {pushSubscribed && (
+                    <button
+                      disabled={testingPush}
+                      onClick={() => void testBrowserNotifications()}
+                      className="ui-button ui-button-secondary mt-2 w-full"
+                    >
+                      <Bell size={15} /> {testingPush ? "Отправляем..." : "Отправить тестовый push"}
+                    </button>
+                  )}
                 </div>
               )}
             </div>
