@@ -11,6 +11,7 @@ const dataDir = process.env.CRM_DATA_DIR || path.join(process.cwd(), "data");
 const secretsFile = path.join(dataDir, "integration-secrets.json");
 const tempSecretsFile = path.join(dataDir, "integration-secrets.tmp.json");
 const supabaseKey = "integration_secrets_v1";
+const integrationSupabaseKey = (integrationId: string) => `integration_secrets_v2_${integrationId}`;
 
 function supabasePersistenceEnabled() {
   return process.env.CRM_FORCE_LOCAL !== "true" && Boolean(process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY);
@@ -88,38 +89,83 @@ async function writeSecrets(value: StoredSecrets) {
   renameSync(tempSecretsFile, secretsFile);
 }
 
+async function readIntegrationSecrets(integrationId: string): Promise<SecretMap> {
+  if (!supabasePersistenceEnabled()) return (await readSecrets())[integrationId] ?? {};
+
+  const { data, error } = await createServiceSupabaseClient()
+    .from("crm_app_state")
+    .select("value")
+    .eq("key", integrationSupabaseKey(integrationId))
+    .maybeSingle();
+  if (error) throw error;
+  if (data?.value) {
+    if (!isEnvelope(data.value)) return {};
+    try {
+      return decrypt(data.value)[integrationId] ?? {};
+    } catch {
+      throw new Error(`Не удалось расшифровать настройки ${integrationId}. Введите ключи интеграции заново.`);
+    }
+  }
+
+  return (await readSecrets())[integrationId] ?? {};
+}
+
+async function writeIntegrationSecrets(integrationId: string, values: SecretMap) {
+  if (!supabasePersistenceEnabled()) {
+    const all = await readSecrets();
+    all[integrationId] = values;
+    await writeSecrets(all);
+    return;
+  }
+
+  const { error } = await createServiceSupabaseClient().from("crm_app_state").upsert({
+    key: integrationSupabaseKey(integrationId),
+    value: encrypt({ [integrationId]: values }),
+    updated_at: new Date().toISOString()
+  }, { onConflict: "key" });
+  if (error) throw error;
+}
+
 export async function saveIntegrationSecrets(integrationId: string, updates: Record<string, string>) {
-  const all = await readSecrets();
-  const current = all[integrationId] ?? {};
+  let current: SecretMap;
+  try {
+    current = await readIntegrationSecrets(integrationId);
+  } catch {
+    // A changed AUTH_SECRET makes the legacy shared container unreadable. A complete
+    // replacement for this integration must still be possible from the CRM UI.
+    current = {};
+  }
   for (const [field, rawValue] of Object.entries(updates)) {
     const value = rawValue.trim();
     if (value) current[field] = value;
   }
-  all[integrationId] = current;
-  await writeSecrets(all);
+  await writeIntegrationSecrets(integrationId, current);
 }
 
 export async function replaceIntegrationSecrets(integrationId: string, values: Record<string, string>) {
-  const all = await readSecrets();
-  all[integrationId] = Object.fromEntries(
+  const replacement = Object.fromEntries(
     Object.entries(values).map(([key, value]) => [key, value.trim()]).filter(([, value]) => Boolean(value))
   );
-  await writeSecrets(all);
+  await writeIntegrationSecrets(integrationId, replacement);
 }
 
 export async function getIntegrationSecrets(integrationId: string) {
-  return { ...(await readSecrets())[integrationId] };
+  return { ...(await readIntegrationSecrets(integrationId)) };
 }
 
 export async function getIntegrationSecretPresence(integrationId: string, fields: readonly string[]) {
-  const values = await getIntegrationSecrets(integrationId);
+  let values: SecretMap = {};
+  try {
+    values = await getIntegrationSecrets(integrationId);
+  } catch {
+    // Presence is informational. An unreadable legacy container should not break
+    // the settings screen or prevent the owner from entering replacement keys.
+  }
   return Object.fromEntries(fields.map((field) => [field, Boolean(values[field] || process.env[field]?.trim())]));
 }
 
 export async function deleteIntegrationSecrets(integrationId: string) {
-  const all = await readSecrets();
-  delete all[integrationId];
-  await writeSecrets(all);
+  await writeIntegrationSecrets(integrationId, {});
 }
 
 export async function migrateLegacyIntegrationSecrets(integrations: { id: string; config?: Record<string, string> }[]) {

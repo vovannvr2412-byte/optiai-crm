@@ -19,7 +19,11 @@ export async function GET(_request: Request, context: { params: Promise<{ integr
   if (!user) return NextResponse.json({ error: "Настройки интеграций доступны руководителю." }, { status: 403 });
   const { integration } = await context.params;
   if (!isExternalIntegrationId(integration)) return NextResponse.json({ error: "Неизвестная интеграция." }, { status: 404 });
-  return NextResponse.json({ integration: await externalIntegrationSummary(integration) }, { headers: { "Cache-Control": "private, no-store" } });
+  try {
+    return NextResponse.json({ integration: await externalIntegrationSummary(integration) }, { headers: { "Cache-Control": "private, no-store" } });
+  } catch (error) {
+    return NextResponse.json({ error: error instanceof Error ? error.message : "Не удалось прочитать настройки интеграции." }, { status: 500 });
+  }
 }
 
 export async function PUT(request: Request, context: { params: Promise<{ integration: string }> }) {
@@ -43,6 +47,10 @@ export async function DELETE(_request: Request, context: { params: Promise<{ int
   if (!user) return NextResponse.json({ error: "Настройки интеграций доступны руководителю." }, { status: 403 });
   const { integration } = await context.params;
   if (!isExternalIntegrationId(integration)) return NextResponse.json({ error: "Неизвестная интеграция." }, { status: 404 });
-  await deleteIntegrationSecrets(integration);
-  return NextResponse.json({ integration: await externalIntegrationSummary(integration), message: "Сохранённые ключи удалены." });
+  try {
+    await deleteIntegrationSecrets(integration);
+    return NextResponse.json({ integration: await externalIntegrationSummary(integration), message: "Сохранённые ключи удалены." });
+  } catch (error) {
+    return NextResponse.json({ error: error instanceof Error ? error.message : "Не удалось удалить настройки интеграции." }, { status: 500 });
+  }
 }

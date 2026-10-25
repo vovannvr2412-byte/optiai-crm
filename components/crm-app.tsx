@@ -36,6 +36,7 @@ import { uploadMediaFile } from "@/lib/media/client";
 import { AccountPasswordForm } from "@/components/account-password-form";
 import type { CrmNotification } from "@/lib/notifications/store";
 import type { AutomationStatus } from "@/lib/automations/scheduler";
+import { readApiJson, readApiJsonOrNull } from "@/lib/api/client";
 
 type Bootstrap = {
   currentUser: CrmUser;
@@ -161,7 +162,7 @@ export function CrmApp() {
       setAuthChecked(true);
       return false;
     }
-    const data = (await response.json()) as Bootstrap;
+    const data = await readApiJson<Bootstrap>(response);
     setBootstrap(data);
     const allowedForUser = ROLE_PERMISSIONS[data.currentUser.role];
     const params = new URLSearchParams(window.location.search);
@@ -198,7 +199,7 @@ export function CrmApp() {
     const syncNotifications = async () => {
       const response = await fetch("/api/notifications", { cache: "no-store" });
       if (!response.ok) return;
-      const data = (await response.json()) as { notifications: CrmNotification[] };
+      const data = await readApiJson<{ notifications: CrmNotification[] }>(response);
       setBootstrap((current) => current ? { ...current, notifications: data.notifications } : current);
     };
     const timer = window.setInterval(() => void syncNotifications(), 60_000);
@@ -230,7 +231,7 @@ export function CrmApp() {
       body: JSON.stringify(notificationId ? { notificationId } : { all: true })
     });
     if (!response.ok) return;
-    const data = (await response.json()) as { notifications: CrmNotification[] };
+    const data = await readApiJson<{ notifications: CrmNotification[] }>(response);
     setBootstrap((current) => current ? { ...current, notifications: data.notifications } : current);
   }
 
@@ -248,10 +249,10 @@ export function CrmApp() {
       const registration = await navigator.serviceWorker.register("/sw.js", { scope: "/" });
       await navigator.serviceWorker.ready;
       let configResponse = await fetch("/api/push/config", { cache: "no-store" });
-      let config = await configResponse.json() as { configured?: boolean; publicKey?: string; error?: string };
+      let config = await readApiJson<{ configured?: boolean; publicKey?: string; error?: string }>(configResponse);
       if (!config.configured) {
         configResponse = await fetch("/api/push/config", { method: "POST" });
-        config = await configResponse.json() as typeof config;
+        config = await readApiJson<typeof config>(configResponse);
       }
       if (!configResponse.ok || !config.publicKey) throw new Error(config.error || "Web Push ещё не настроен руководителем.");
       const existing = await registration.pushManager.getSubscription();
@@ -262,7 +263,7 @@ export function CrmApp() {
       const saveResponse = await fetch("/api/push/subscriptions", {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(subscription.toJSON())
       });
-      const saved = await saveResponse.json().catch(() => null) as { error?: string } | null;
+      const saved = await readApiJsonOrNull<{ error?: string }>(saveResponse);
       if (!saveResponse.ok) throw new Error(saved?.error || "Не удалось сохранить подписку устройства.");
       setPushSubscribed(true);
       setToast("Push-уведомления включены на этом устройстве.");
@@ -295,7 +296,7 @@ export function CrmApp() {
     try {
       const response = await fetch("/api/auth/logout", { method: "POST" });
       if (!response.ok) {
-        const data = (await response.json().catch(() => null)) as { error?: string } | null;
+        const data = await readApiJsonOrNull<{ error?: string }>(response);
         throw new Error(data?.error ?? "Не удалось завершить сессию.");
       }
       window.sessionStorage.removeItem("optiai:selectedLeadId");
@@ -321,11 +322,11 @@ export function CrmApp() {
         return false;
       }
       if (!response.ok) {
-        const data = (await response.json().catch(() => null)) as { error?: string } | null;
+        const data = await readApiJsonOrNull<{ error?: string }>(response);
         setToast(data?.error || "Не удалось выполнить действие.");
         return false;
       }
-      const data = (await response.json()) as Bootstrap;
+      const data = await readApiJson<Bootstrap>(response);
       setBootstrap(data);
       if (action.type === "create_lead") {
         setQuery("");
@@ -1393,7 +1394,7 @@ function LoginScreen({ onLogin }: { onLogin: () => Promise<boolean> }) {
       body: JSON.stringify({ email, password })
     });
     if (!response.ok) {
-      const data = (await response.json().catch(() => null)) as { error?: string } | null;
+      const data = await readApiJsonOrNull<{ error?: string }>(response);
       setError(data?.error || "Не удалось войти");
       setSubmitting(false);
       return;
@@ -1412,7 +1413,7 @@ function LoginScreen({ onLogin }: { onLogin: () => Promise<boolean> }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email })
       });
-      const data = (await response.json().catch(() => null)) as { error?: string; message?: string } | null;
+      const data = await readApiJsonOrNull<{ error?: string; message?: string }>(response);
       if (!response.ok) setError(data?.error ?? "Не удалось отправить письмо.");
       else setNotice(data?.message ?? "Проверьте почту и папку «Спам».");
     } catch {
@@ -1984,7 +1985,7 @@ function ExternalIntegrationForm({ integration }: { integration: CrmState["integ
     setLoading(true);
     try {
       const response = await fetch(`/api/integrations/${id}`, { cache: "no-store" });
-      const data = await response.json() as { integration?: ExternalIntegrationSummary; error?: string };
+      const data = await readApiJson<{ integration?: ExternalIntegrationSummary; error?: string }>(response);
       if (!response.ok) throw new Error(data.error || "Не удалось получить состояние интеграции.");
       setSummary(data.integration ?? null);
     } catch (error) {
@@ -2005,7 +2006,7 @@ function ExternalIntegrationForm({ integration }: { integration: CrmState["integ
     setMessage("");
     try {
       const response = await fetch(`/api/integrations/${id}${mode === "delete" ? "" : `/${mode}`}`, { method: mode === "delete" ? "DELETE" : "POST" });
-      const data = await response.json() as { integration?: ExternalIntegrationSummary; message?: string; error?: string };
+      const data = await readApiJson<{ integration?: ExternalIntegrationSummary; message?: string; error?: string }>(response);
       if (data.integration) setSummary(data.integration);
       if (!response.ok) throw new Error(data.error || "Операция не выполнена.");
       setMessage(data.message || "Операция выполнена.");
@@ -2025,7 +2026,7 @@ function ExternalIntegrationForm({ integration }: { integration: CrmState["integ
     setMessage("");
     try {
       const response = await fetch(`/api/integrations/${id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ config }) });
-      const data = await response.json() as { integration?: ExternalIntegrationSummary; message?: string; error?: string };
+      const data = await readApiJson<{ integration?: ExternalIntegrationSummary; message?: string; error?: string }>(response);
       if (data.integration) setSummary(data.integration);
       if (!response.ok) throw new Error(data.error || "Не удалось сохранить настройки.");
       form.reset();
@@ -2076,7 +2077,7 @@ function MessengerIntegrationForm({ channel }: { channel: MessengerChannel }) {
     setLoading(true);
     try {
       const response = await fetch("/api/messaging/connections", { cache: "no-store" });
-      const data = await response.json() as { connections?: MessengerConnection[]; error?: string };
+      const data = await readApiJson<{ connections?: MessengerConnection[]; error?: string }>(response);
       if (!response.ok) throw new Error(data.error || "Не удалось прочитать настройки.");
       setConnection(data.connections?.find((item) => item.channel === channel) ?? null);
     } catch (error) {
@@ -2097,7 +2098,7 @@ function MessengerIntegrationForm({ channel }: { channel: MessengerChannel }) {
     setMessage("");
     try {
       const response = await fetch(`/api/messaging/connections/${channel}/check`, { method: "POST" });
-      const data = await response.json() as { connection?: MessengerConnection; message?: string; error?: string };
+      const data = await readApiJson<{ connection?: MessengerConnection; message?: string; error?: string }>(response);
       if (data.connection) setConnection(data.connection);
       setMessage(data.message || data.error || (response.ok ? "Подключение работает." : "Проверка не пройдена."));
     } catch {
@@ -2124,7 +2125,7 @@ function MessengerIntegrationForm({ channel }: { channel: MessengerChannel }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ config })
       });
-      const data = await response.json() as { connection?: MessengerConnection; message?: string; error?: string };
+      const data = await readApiJson<{ connection?: MessengerConnection; message?: string; error?: string }>(response);
       if (!response.ok) throw new Error(data.error || "Не удалось сохранить настройки.");
       if (data.connection) setConnection(data.connection);
       form.reset();
@@ -2142,7 +2143,7 @@ function MessengerIntegrationForm({ channel }: { channel: MessengerChannel }) {
     setMessage("");
     try {
       const response = await fetch(`/api/messaging/connections/${channel}`, { method: "DELETE" });
-      const data = await response.json() as { connection?: MessengerConnection; message?: string; error?: string };
+      const data = await readApiJson<{ connection?: MessengerConnection; message?: string; error?: string }>(response);
       if (!response.ok) throw new Error(data.error || "Не удалось удалить настройки.");
       if (data.connection) setConnection(data.connection);
       setMessage(data.message || "Сохранённые настройки удалены.");
@@ -2157,7 +2158,7 @@ function MessengerIntegrationForm({ channel }: { channel: MessengerChannel }) {
     setSyncing(true); setMessage("");
     try {
       const response = await fetch(`/api/messaging/connections/${channel}/sync`, { method: "POST" });
-      const data = await response.json() as { read?: number; imported?: number; error?: string };
+      const data = await readApiJson<{ read?: number; imported?: number; error?: string }>(response);
       if (!response.ok) throw new Error(data.error || "Не удалось синхронизировать историю.");
       setMessage(`Прочитано сообщений: ${data.read ?? 0}. Добавлено новых: ${data.imported ?? 0}.`);
       await loadConnection();
