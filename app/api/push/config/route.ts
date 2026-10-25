@@ -6,8 +6,12 @@ import { ensureVapidConfiguration, getPushConfiguration, hasPushSubscription } f
 export async function GET() {
   const userId = await getSessionUserId();
   if (!userId) return NextResponse.json({ error: "Требуется вход" }, { status: 401 });
-  const config = await getPushConfiguration();
-  return NextResponse.json({ ...config, subscribed: await hasPushSubscription(userId) }, { headers: { "Cache-Control": "private, no-store" } });
+  try {
+    const config = await getPushConfiguration();
+    return NextResponse.json({ ...config, subscribed: await hasPushSubscription(userId) }, { headers: { "Cache-Control": "private, no-store" } });
+  } catch (error) {
+    return NextResponse.json({ error: error instanceof Error ? error.message : "Не удалось проверить Web Push." }, { status: 500 });
+  }
 }
 
 export async function POST() {

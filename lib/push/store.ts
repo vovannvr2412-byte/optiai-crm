@@ -24,7 +24,14 @@ async function vapidConfiguration() {
 }
 
 export async function ensureVapidConfiguration(email: string) {
-  const current = await vapidConfiguration();
+  let current: Awaited<ReturnType<typeof vapidConfiguration>>;
+  try {
+    current = await vapidConfiguration();
+  } catch {
+    // If AUTH_SECRET changed, the legacy shared container cannot be decrypted.
+    // Generate a fresh per-integration VAPID configuration instead of blocking push setup.
+    current = { publicKey: "", privateKey: "", subject: "" };
+  }
   if (current.publicKey && current.privateKey && current.subject) return current;
   const generated = webpush.generateVAPIDKeys();
   const subject = `mailto:${email}`;
@@ -37,8 +44,12 @@ export async function ensureVapidConfiguration(email: string) {
 }
 
 export async function getPushConfiguration() {
-  const config = await vapidConfiguration();
-  return { configured: Boolean(config.publicKey && config.privateKey && config.subject), publicKey: config.publicKey };
+  try {
+    const config = await vapidConfiguration();
+    return { configured: Boolean(config.publicKey && config.privateKey && config.subject), publicKey: config.publicKey };
+  } catch {
+    return { configured: false, publicKey: "" };
+  }
 }
 
 export async function savePushSubscription(userId: string, subscription: PushSubscriptionInput, userAgent?: string) {

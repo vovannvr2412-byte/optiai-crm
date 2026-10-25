@@ -126,6 +126,23 @@ function phoneHref(phone: string) {
   return normalized ? `tel:${normalized}` : "#";
 }
 
+function isIosDevice() {
+  return /iPad|iPhone|iPod/i.test(navigator.userAgent)
+    || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+}
+
+function isStandaloneApp() {
+  return window.matchMedia("(display-mode: standalone)").matches
+    || Boolean((navigator as Navigator & { standalone?: boolean }).standalone);
+}
+
+function deniedPushMessage() {
+  if (isIosDevice()) {
+    return "Уведомления запрещены для OptiAI CRM. Откройте Настройки iPhone → Уведомления → OptiAI CRM и включите «Допуск уведомлений».";
+  }
+  return "Уведомления запрещены для этого сайта. В настройках браузера откройте «Настройки сайта» → «Уведомления» → optiai-crm.vercel.app и выберите «Разрешить».";
+}
+
 function leadStatusForStage(stage: number): Lead["status"] {
   if (stage === 12) return "lost";
   if (stage >= 9) return "client";
@@ -236,14 +253,26 @@ export function CrmApp() {
   }
 
   async function enableBrowserNotifications() {
+    if (!window.isSecureContext) {
+      setToast("Push-уведомления доступны только по HTTPS. Откройте опубликованную версию CRM на Vercel.");
+      return;
+    }
+    if (isIosDevice() && !isStandaloneApp()) {
+      setToast("На iPhone сначала откройте CRM в Safari, нажмите «Поделиться» → «На экран Домой», затем запустите CRM с добавленной иконки.");
+      return;
+    }
     if (typeof Notification === "undefined" || !("serviceWorker" in navigator) || !("PushManager" in window)) {
-      setToast("Этот браузер не поддерживает фоновые push-уведомления.");
+      setToast("Этот браузер не поддерживает Web Push. Откройте CRM в актуальном Chrome, Edge, Firefox или Safari, а не во встроенном браузере мессенджера.");
+      return;
+    }
+    if (Notification.permission === "denied") {
+      setToast(deniedPushMessage());
       return;
     }
     try {
       const permission = await Notification.requestPermission();
       if (permission !== "granted") {
-        setToast("Браузер не разрешил уведомления.");
+        setToast(permission === "denied" ? deniedPushMessage() : "Разрешение не выдано. Нажмите кнопку ещё раз и выберите «Разрешить» в запросе браузера.");
         return;
       }
       const registration = await navigator.serviceWorker.register("/sw.js", { scope: "/" });
