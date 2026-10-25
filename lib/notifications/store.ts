@@ -53,6 +53,7 @@ export async function createNotification(input: {
   title: string;
   body: string;
   eventKey: string;
+  url?: string;
 }) {
   if (!supabasePersistenceEnabled()) return;
   const { data, error } = await createServiceSupabaseClient().from("crm_notifications").upsert({
@@ -69,7 +70,7 @@ export async function createNotification(input: {
     await sendPushToUser(input.userId, {
       title: input.title,
       body: input.body,
-      url: input.leadId ? `/?lead=${encodeURIComponent(input.leadId)}` : "/?view=tasks",
+      url: input.url ?? (input.leadId ? `/?lead=${encodeURIComponent(input.leadId)}` : "/?view=tasks"),
       tag: input.eventKey
     }).catch((pushError) => console.error("Push notification failed", { message: pushError instanceof Error ? pushError.message : String(pushError) }));
   }

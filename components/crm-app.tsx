@@ -781,7 +781,7 @@ export function CrmApp() {
                           setNotificationsOpen(false);
                           const lead = notification.leadId ? state.leads.find((item) => item.id === notification.leadId) : undefined;
                           if (lead) openLead(lead);
-                          else setActiveView("tasks");
+                          else setActiveView(notification.type === "message" ? "messengers" : "tasks");
                         }}
                         className={clsx("mb-1 block w-full rounded-md px-3 py-2 text-left hover:bg-slate-50", !notification.readAt && "bg-[#F3F5FF]")}
                       >

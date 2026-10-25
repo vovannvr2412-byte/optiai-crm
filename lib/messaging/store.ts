@@ -364,9 +364,14 @@ export async function saveIncomingMessage(incoming: NormalizedIncomingMessage) {
   const now = new Date().toISOString();
   if (!supabasePersistenceEnabled()) {
     return mutateLocal((snapshot) => {
-      if (snapshot.processedEvents.some((event) => event.provider === incoming.channel && event.eventId === incoming.eventId)
-        || snapshot.messages.some((message) => message.channel === incoming.channel && message.connectionId === incoming.connectionId && message.externalMessageId === incoming.externalMessageId)) {
-        return { duplicate: true };
+      const duplicateMessage = snapshot.messages.find((message) => message.channel === incoming.channel && message.connectionId === incoming.connectionId && message.externalMessageId === incoming.externalMessageId);
+      if (snapshot.processedEvents.some((event) => event.provider === incoming.channel && event.eventId === incoming.eventId) || duplicateMessage) {
+        const conversation = duplicateMessage ? snapshot.conversations.find((item) => item.id === duplicateMessage.conversationId) : undefined;
+        return {
+          duplicate: true,
+          conversation: conversation ? structuredClone(conversation) : undefined,
+          message: duplicateMessage ? structuredClone(duplicateMessage) : undefined
+        };
       }
       let conversation = snapshot.conversations.find((item) => item.connectionId === incoming.connectionId && item.externalConversationId === incoming.externalConversationId);
       if (!conversation) {
@@ -406,8 +411,14 @@ export async function saveIncomingMessage(incoming: NormalizedIncomingMessage) {
   }
 
   const supabase = createServiceSupabaseClient();
-  const { data: existingMessage } = await supabase.from("messenger_messages").select("id").eq("connection_id", incoming.connectionId).eq("channel", incoming.channel).eq("external_message_id", incoming.externalMessageId).maybeSingle();
-  if (existingMessage) return { duplicate: true };
+  const { data: existingMessage, error: existingMessageError } = await supabase.from("messenger_messages").select("*").eq("connection_id", incoming.connectionId).eq("channel", incoming.channel).eq("external_message_id", incoming.externalMessageId).maybeSingle();
+  if (existingMessageError) throw existingMessageError;
+  if (existingMessage) {
+    const message = toMessage(existingMessage);
+    const { data: duplicateConversation, error: duplicateConversationError } = await supabase.from("messenger_conversations").select("*").eq("id", message.conversationId).single();
+    if (duplicateConversationError) throw duplicateConversationError;
+    return { duplicate: true, conversation: toConversation(duplicateConversation), message };
+  }
   const { data: existingConversation, error: findError } = await supabase.from("messenger_conversations").select("*").eq("connection_id", incoming.connectionId).eq("external_conversation_id", incoming.externalConversationId).maybeSingle();
   if (findError) throw findError;
   let conversation = existingConversation ? toConversation(existingConversation) : null;
@@ -431,7 +442,7 @@ export async function saveIncomingMessage(incoming: NormalizedIncomingMessage) {
     attachments: incoming.attachments, metadata: incoming.metadata ?? {}
   }).select("*").single();
   if (messageError) {
-    if (messageError.code === "23505") return { duplicate: true };
+    if (messageError.code === "23505") return { duplicate: true, conversation: undefined, message: undefined };
     throw messageError;
   }
   const { data: updatedConversation, error: updateError } = await supabase.from("messenger_conversations").update({
