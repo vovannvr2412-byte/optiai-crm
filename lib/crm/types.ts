@@ -191,7 +191,7 @@ export type DashboardMetrics = {
 export type LeadUpdate = Partial<Omit<Lead, "id" | "status" | "score" | "temperature" | "createdAt">>;
 
 export type CrmAction =
-  | { type: "create_user"; payload: Pick<CrmUser, "fullName" | "email" | "role" | "position"> }
+  | { type: "create_user"; payload: Pick<CrmUser, "fullName" | "email" | "role" | "position"> & { password: string } }
   | { type: "disable_user"; payload: { userId: string } }
   | { type: "delete_user"; payload: { userId: string } }
   | { type: "complete_task"; payload: { taskId: string } }
@@ -207,7 +207,11 @@ export type CrmAction =
   | { type: "record_call_result"; payload: { leadId: string; ownerId: string; result: ManualCallResult; comment?: string } }
   | { type: "send_message"; payload: { leadId: string; channel: string; text: string } }
   | { type: "start_warmup"; payload: { leadId: string; sequenceId: string } }
-  | { type: "create_warmup_step"; payload: { sequenceId: string; day: number; title: string; message: string; attachmentUrl?: string; attachmentType?: "image" | "video"; attachmentName?: string } }
+  | { type: "create_warmup_sequence"; payload: { name: string; description: string; active: boolean } }
+  | { type: "update_warmup_sequence"; payload: { sequenceId: string; name: string; description: string; active: boolean } }
+  | { type: "delete_warmup_sequence"; payload: { sequenceId: string } }
+  | { type: "create_warmup_step"; payload: { sequenceId: string; day: number; title: string; message: string; contentType?: WarmupStep["contentType"]; attachmentUrl?: string; attachmentType?: "image" | "video"; attachmentName?: string } }
+  | { type: "update_warmup_step"; payload: { sequenceId: string; stepId: string; day: number; title: string; message: string; contentType: WarmupStep["contentType"]; attachmentUrl?: string | null; attachmentType?: "image" | "video" | null; attachmentName?: string | null } }
   | { type: "delete_warmup_step"; payload: { sequenceId: string; stepId: string } }
   | { type: "mark_paid"; payload: { leadId: string; tariffId: string } }
   | { type: "mark_refused"; payload: { leadId: string; reason: string } }

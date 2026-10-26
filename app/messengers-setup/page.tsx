@@ -6,8 +6,8 @@ const channels = [
   },
   {
     name: "WhatsApp Business Cloud API",
-    env: "WHATSAPP_ACCESS_TOKEN, WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_VERIFY_TOKEN, WHATSAPP_APP_SECRET",
-    steps: "Создайте Business-приложение Meta, подключите номер и подпишите webhook /api/messaging/webhooks/whatsapp на поле messages."
+    env: "WHATSAPP_ACCESS_TOKEN, WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_VERIFY_TOKEN, WHATSAPP_APP_SECRET, WHATSAPP_WARMUP_TEMPLATE_NAME",
+    steps: "Создайте Business-приложение Meta, подключите номер и подпишите webhook /api/messaging/webhooks/whatsapp на поле messages. Для прогрева вне 24-часового окна добавьте одобренные текстовый и, при необходимости, медиа-шаблоны."
   },
   {
     name: "MAX",
@@ -42,7 +42,7 @@ export default function MessengersSetupPage() {
         ))}
       </div>
       <section className="mt-6 border-l-4 border-[#536DFE] bg-[#EEF1FF] p-4 text-sm leading-6 text-[#263264]">
-        Для production выполните миграции центра сообщений, media storage и `0008_external_integrations_and_web_push.sql`. В Vercel обязательно сохраните постоянный `AUTH_SECRET`: он используется для шифрования ключей. Полная пошаговая инструкция находится в `MESSENGERS_SETUP.md` репозитория.
+        Для production выполните миграции центра сообщений, media storage, `0008_external_integrations_and_web_push.sql` и `0010_ai_messaging_autopilot.sql`. В Vercel обязательно сохраните постоянный `AUTH_SECRET`: он используется для шифрования ключей. Полная пошаговая инструкция находится в `MESSENGERS_SETUP.md` репозитория.
       </section>
     </main>
   );

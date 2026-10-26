@@ -1,9 +1,12 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { NextResponse } from "next/server";
+import { after, NextResponse } from "next/server";
+import { processIncomingAiReply } from "@/lib/ai/messaging";
 import { normalizeWhatsAppStatuses, whatsappAdapter } from "@/lib/messaging/providers/whatsapp";
 import { updateMessageStatusByExternalId } from "@/lib/messaging/store";
 import { saveIncomingMessageAndNotify } from "@/lib/messaging/incoming";
 import { getMessengerSecrets } from "@/lib/messaging/secrets";
+
+export const maxDuration = 120;
 
 export async function GET(request: Request) {
   const url = new URL(request.url);
@@ -26,10 +29,11 @@ export async function POST(request: Request) {
   try {
     const messages = whatsappAdapter.normalizeWebhook(payload);
     const statuses = normalizeWhatsAppStatuses(payload);
-    await Promise.all([
-      ...messages.map(saveIncomingMessageAndNotify),
-      ...statuses.map((item) => updateMessageStatusByExternalId("whatsapp", item.externalMessageId, item.status, item.errorReason))
+    const [results] = await Promise.all([
+      Promise.all(messages.map(saveIncomingMessageAndNotify)),
+      Promise.all(statuses.map((item) => updateMessageStatusByExternalId("whatsapp", item.externalMessageId, item.status, item.errorReason)))
     ]);
+    after(() => Promise.all(results.map(processIncomingAiReply)).then(() => undefined));
     return NextResponse.json({ ok: true });
   } catch {
     return NextResponse.json({ error: "Temporary processing error" }, { status: 503 });

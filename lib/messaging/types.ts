@@ -1,6 +1,7 @@
 export type MessengerChannel = "telegram" | "whatsapp" | "max" | "instagram" | "avito";
 export type MessengerConnectionStatus = "not_configured" | "needs_setup" | "connected" | "error";
 export type ConversationStatus = "open" | "waiting" | "closed";
+export type ConversationAiMode = "auto" | "paused";
 export type MessageDirection = "inbound" | "outbound";
 export type MessageDeliveryStatus = "received" | "pending" | "sent" | "delivered" | "read" | "failed";
 export type MessageContentType = "text" | "image" | "video" | "audio" | "file" | "location" | "unknown";
@@ -58,6 +59,7 @@ export type MessengerConversation = {
   lastMessageAt: string;
   unreadCount: number;
   status: ConversationStatus;
+  aiMode: ConversationAiMode;
   notes: string;
   createdAt: string;
   updatedAt: string;
@@ -124,7 +126,9 @@ export type ProviderAdapter = {
   isConfigured(): Promise<boolean>;
   checkConnection(): Promise<ProviderHealth>;
   sendText(conversation: MessengerConversation, text: string): Promise<ProviderSendResult>;
+  sendAutomationText?(conversation: MessengerConversation, text: string): Promise<ProviderSendResult>;
   sendMedia(conversation: MessengerConversation, attachment: OutgoingMediaAttachment, caption?: string): Promise<ProviderSendResult>;
+  sendAutomationMedia?(conversation: MessengerConversation, attachment: OutgoingMediaAttachment, caption?: string): Promise<ProviderSendResult>;
   downloadAttachment?(attachment: MessageAttachment): Promise<ProviderMediaDownload>;
   configureWebhook?(webhookUrl: string): Promise<void>;
   pullIncoming?(): Promise<NormalizedIncomingMessage[]>;

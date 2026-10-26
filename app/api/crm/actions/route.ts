@@ -1,8 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getSessionUserId } from "@/lib/auth/session";
-import { banSupabaseAuthUser, deleteSupabaseAuthUser, getAuthUserIdForCrmUser, inviteSupabaseAuthUser } from "@/lib/auth/supabase-users";
-import { passwordSetupUrl } from "@/lib/auth/urls";
+import { banSupabaseAuthUser, createSupabaseAuthUser, deleteSupabaseAuthUser, getAuthUserIdForCrmUser } from "@/lib/auth/supabase-users";
 import { applyCrmActionAsync, dashboardMetrics, getCrmStateAsync, scopedStateForAsync } from "@/lib/crm/store";
 import type { CrmAction, CrmUser } from "@/lib/crm/types";
 import { saveIntegrationSecrets } from "@/lib/integrations/secrets";
@@ -38,7 +37,12 @@ const createUserPayloadSchema = z.object({
   fullName: z.string().trim().min(2).max(120),
   email: z.string().email(),
   role: z.enum(["Руководитель", "РОП", "Менеджер", "Аккаунт-менеджер"]),
-  position: z.string().trim().min(2).max(120)
+  position: z.string().trim().min(2).max(120),
+  password: z.string()
+    .min(10, "Пароль должен содержать минимум 10 символов.")
+    .max(128)
+    .regex(/[a-zа-я]/i, "Добавьте в пароль буквы.")
+    .regex(/\d/, "Добавьте в пароль цифру.")
 });
 const configureIntegrationPayloadSchema = z.object({
   integrationId: z.string().min(1).max(80),
@@ -49,9 +53,24 @@ const createWarmupStepPayloadSchema = z.object({
   day: z.number().int().min(0).max(3650),
   title: z.string().trim().min(1).max(160),
   message: z.string().trim().min(1).max(4000),
+  contentType: z.enum(["VSL", "SEO audit", "Case", "Competitor audit", "Custom"]).optional(),
   attachmentUrl: z.string().url().optional(),
   attachmentType: z.enum(["image", "video"]).optional(),
   attachmentName: z.string().max(255).optional()
+});
+const warmupSequencePayloadSchema = z.object({
+  name: z.string().trim().min(2).max(160),
+  description: z.string().trim().max(1000),
+  active: z.boolean()
+});
+const updateWarmupSequencePayloadSchema = warmupSequencePayloadSchema.extend({ sequenceId: z.string().min(1) });
+const deleteWarmupSequencePayloadSchema = z.object({ sequenceId: z.string().min(1) });
+const updateWarmupStepPayloadSchema = createWarmupStepPayloadSchema.extend({
+  stepId: z.string().min(1),
+  contentType: z.enum(["VSL", "SEO audit", "Case", "Competitor audit", "Custom"]),
+  attachmentUrl: z.string().url().nullable().optional(),
+  attachmentType: z.enum(["image", "video"]).nullable().optional(),
+  attachmentName: z.string().max(255).nullable().optional()
 });
 const deleteWarmupStepPayloadSchema = z.object({ sequenceId: z.string().min(1), stepId: z.string().min(1) });
 
@@ -73,8 +92,11 @@ export async function POST(request: Request) {
   }
 
   const action = parsed.data as CrmAction;
-  if (action.type === "create_user" && !createUserPayloadSchema.safeParse(action.payload).success) {
-    return NextResponse.json({ error: "Укажите корректные данные сотрудника" }, { status: 400 });
+  if (action.type === "create_user") {
+    const result = createUserPayloadSchema.safeParse(action.payload);
+    if (!result.success) {
+      return NextResponse.json({ error: result.error.issues[0]?.message ?? "Укажите корректные данные сотрудника" }, { status: 400 });
+    }
   }
   if (action.type === "configure_integration" && !configureIntegrationPayloadSchema.safeParse(action.payload).success) {
     return NextResponse.json({ error: "Проверьте поля интеграции" }, { status: 400 });
@@ -97,6 +119,18 @@ export async function POST(request: Request) {
   if (action.type === "create_warmup_step" && !createWarmupStepPayloadSchema.safeParse(action.payload).success) {
     return NextResponse.json({ error: "Проверьте день, название, текст и вложение шага прогрева" }, { status: 400 });
   }
+  if (action.type === "create_warmup_sequence" && !warmupSequencePayloadSchema.safeParse(action.payload).success) {
+    return NextResponse.json({ error: "Проверьте название и описание цепочки" }, { status: 400 });
+  }
+  if (action.type === "update_warmup_sequence" && !updateWarmupSequencePayloadSchema.safeParse(action.payload).success) {
+    return NextResponse.json({ error: "Проверьте настройки цепочки" }, { status: 400 });
+  }
+  if (action.type === "delete_warmup_sequence" && !deleteWarmupSequencePayloadSchema.safeParse(action.payload).success) {
+    return NextResponse.json({ error: "Некорректная цепочка прогрева" }, { status: 400 });
+  }
+  if (action.type === "update_warmup_step" && !updateWarmupStepPayloadSchema.safeParse(action.payload).success) {
+    return NextResponse.json({ error: "Проверьте день, название, текст и вложение шага прогрева" }, { status: 400 });
+  }
   if (action.type === "delete_warmup_step" && !deleteWarmupStepPayloadSchema.safeParse(action.payload).success) {
     return NextResponse.json({ error: "Некорректный шаг прогрева" }, { status: 400 });
   }
@@ -104,7 +138,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Недостаточно прав" }, { status: 403 });
   }
   if (action.type === "create_user" && !supabaseAuthEnabled()) {
-    return NextResponse.json({ error: "Для приглашения сотрудников подключите Supabase Auth." }, { status: 503 });
+    return NextResponse.json({ error: "Для создания аккаунтов сотрудников подключите Supabase Auth." }, { status: 503 });
   }
   if ((action.type === "configure_integration" || action.type === "toggle_integration")
     && !fullState.integrations.some((item) => item.id === action.payload.integrationId)) {
@@ -133,7 +167,7 @@ export async function POST(request: Request) {
         createdUser = savedState.users.find((user) => user.email.toLowerCase() === action.payload.email.trim().toLowerCase());
         if (!createdUser) throw new Error("Созданный сотрудник не найден в CRM.");
         try {
-          await inviteSupabaseAuthUser(createdUser, passwordSetupUrl(request));
+          await createSupabaseAuthUser(createdUser, action.payload.password);
         } catch (error) {
           await applyCrmActionAsync({ type: "delete_user", payload: { userId: createdUser.id } });
           throw error;
@@ -156,9 +190,6 @@ export async function POST(request: Request) {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error("CRM action failed", { actionType: action.type, message, error });
-    if (action.type === "create_user" && /email rate limit/i.test(message)) {
-      return NextResponse.json({ error: "Supabase временно ограничил отправку писем. Подключите собственный SMTP или повторите приглашение позже." }, { status: 429 });
-    }
     return NextResponse.json({ error: `CRM не смогла сохранить действие: ${message}` }, { status: 500 });
   }
   return NextResponse.json({
@@ -180,7 +211,14 @@ function canRunAction(user: CrmUser, action: CrmAction, state: Awaited<ReturnTyp
   if (action.type === "create_user") {
     return user.role === "РОП" && (action.payload.role === "Менеджер" || action.payload.role === "Аккаунт-менеджер");
   }
-  if (action.type === "create_warmup_step" || action.type === "delete_warmup_step") return user.role === "РОП";
+  if (
+    action.type === "create_warmup_sequence"
+    || action.type === "update_warmup_sequence"
+    || action.type === "delete_warmup_sequence"
+    || action.type === "create_warmup_step"
+    || action.type === "update_warmup_step"
+    || action.type === "delete_warmup_step"
+  ) return user.role === "РОП";
   if (user.role === "РОП") return action.type !== "toggle_integration" && action.type !== "configure_integration";
   if (action.type === "assign_lead" || action.type === "toggle_integration" || action.type === "configure_integration" || action.type === "run_automation") {
     return false;

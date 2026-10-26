@@ -8,6 +8,7 @@ const schema = z.object({
   ownerId: z.string().nullable().optional(),
   notes: z.string().max(2000).optional(),
   status: z.enum(["open", "waiting", "closed"]).optional(),
+  aiMode: z.enum(["auto", "paused"]).optional(),
   markRead: z.boolean().optional()
 });
 

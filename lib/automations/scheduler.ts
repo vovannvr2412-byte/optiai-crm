@@ -1,12 +1,13 @@
 import { applyCrmActionAsync, getCrmStateAsync, supabasePersistenceEnabled } from "@/lib/crm/store";
 import type { Lead, WarmupStep } from "@/lib/crm/types";
-import { createPendingMessageOnce, finishOutgoingMessage, listConversationsForUser } from "@/lib/messaging/store";
+import { createPendingMessageOnce, finishOutgoingMessage, listConversationMessagesSystem, listConversationsForUser } from "@/lib/messaging/store";
 import { providerFor } from "@/lib/messaging/providers";
 import { safeProviderError } from "@/lib/messaging/config";
-import type { OutgoingMediaAttachment } from "@/lib/messaging/types";
+import type { MessengerConversation, OutgoingMediaAttachment } from "@/lib/messaging/types";
 import { createNotification } from "@/lib/notifications/store";
 import { createServiceSupabaseClient } from "@/lib/supabase/server";
 import { syncScheduledExternalIntegrations } from "@/lib/external-integrations";
+import { personalizeWarmupMessage } from "@/lib/ai/service";
 import { assignWarmupSequence } from "./warmup";
 
 type SchedulerStats = {
@@ -112,9 +113,9 @@ async function sendAutomatedMessage(input: {
   text: string;
   idempotencyKey: string;
   attachment?: OutgoingMediaAttachment;
+  conversation?: MessengerConversation;
 }) {
-  const conversations = await listConversationsForUser(input.lead.ownerId);
-  const conversation = conversations.find((item) => item.leadId === input.lead.id);
+  const conversation = input.conversation ?? (await listConversationsForUser(input.lead.ownerId)).find((item) => item.leadId === input.lead.id);
   if (!conversation) throw new Error("У лида нет привязанного чата в центре сообщений.");
   if (conversation.channel === "telegram" && conversation.needsReconnect) {
     throw new Error("Telegram-диалог ожидает /start у нового бота.");
@@ -133,8 +134,12 @@ async function sendAutomatedMessage(input: {
 
   try {
     const result = input.attachment
-      ? await adapter.sendMedia(conversation, input.attachment, input.text || undefined)
-      : await adapter.sendText(conversation, input.text);
+      ? adapter.sendAutomationMedia
+        ? await adapter.sendAutomationMedia(conversation, input.attachment, input.text || undefined)
+        : await adapter.sendMedia(conversation, input.attachment, input.text || undefined)
+      : adapter.sendAutomationText
+        ? await adapter.sendAutomationText(conversation, input.text)
+        : await adapter.sendText(conversation, input.text);
     await finishOutgoingMessage(pending.message.id, result);
   } catch (error) {
     await finishOutgoingMessage(pending.message.id, { status: "failed", errorReason: cleanError(error) });
@@ -264,7 +269,22 @@ async function runWarmupSteps(stats: SchedulerStats) {
       payload: { assignmentId: assignment.id, sequenceId: sequence.id, stepId: dueStep.id, day: dueStep.day }
     }, stats, async () => {
       const attachment = warmupAttachment(dueStep);
-      await sendAutomatedMessage({ lead, text: dueStep.message, idempotencyKey: eventKey, attachment });
+      const conversation = (await listConversationsForUser(lead.ownerId)).find((item) => item.leadId === lead.id);
+      if (!conversation) throw new Error("У лида нет привязанного чата в центре сообщений.");
+      let message = dueStep.message;
+      try {
+        message = await personalizeWarmupMessage({
+          conversation,
+          messages: await listConversationMessagesSystem(conversation.id, 20),
+          lead,
+          sequenceName: sequence.name,
+          stepTitle: dueStep.title,
+          template: dueStep.message
+        });
+      } catch (error) {
+        console.error("AI warmup personalization failed; using authored template", { leadId: lead.id, stepId: dueStep.id, error: cleanError(error) });
+      }
+      await sendAutomatedMessage({ lead, text: message, idempotencyKey: eventKey, attachment, conversation });
       const { error: taskError } = await supabase.from("tasks").update({ status: "done" })
         .eq("lead_id", lead.id)
         .eq("automation_key", `warmup:${sequence.id}:${dueStep.id}`)

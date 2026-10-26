@@ -63,6 +63,17 @@ function persistState(state: CrmState) {
 
 function migrateState(state: CrmState) {
   let changed = false;
+  if (!state.integrations.some((integration) => integration.id === "ai")) {
+    state.integrations.push({ id: "ai", name: "AI-ассистент", description: "Анализ звонков, автоматические ответы и персонализация прогревов", status: "needs_setup" });
+    changed = true;
+  } else {
+    const ai = state.integrations.find((integration) => integration.id === "ai")!;
+    if (ai.name !== "AI-ассистент" || ai.description !== "Анализ звонков, автоматические ответы и персонализация прогревов") {
+      ai.name = "AI-ассистент";
+      ai.description = "Анализ звонков, автоматические ответы и персонализация прогревов";
+      changed = true;
+    }
+  }
   if (!Array.isArray(state.warmupSequences)) {
     state.warmupSequences = [];
     changed = true;
@@ -114,6 +125,12 @@ function today() {
 function dateOnly(daysFromNow = 0) {
   const date = new Date();
   date.setDate(date.getDate() + daysFromNow);
+  return date.toISOString().slice(0, 10);
+}
+
+function shiftDate(value: string, days: number) {
+  const date = new Date(`${value.slice(0, 10)}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + days);
   return date.toISOString().slice(0, 10);
 }
 
@@ -344,7 +361,7 @@ export function applyCrmAction(action: CrmAction): CrmState {
   }
 
   if (action.type === "create_user") {
-    if (!supabasePersistenceEnabled()) throw new Error("Приглашения сотрудников требуют подключенного Supabase Auth.");
+    if (!supabasePersistenceEnabled()) throw new Error("Создание аккаунтов сотрудников требует подключенного Supabase Auth.");
     const normalizedEmail = action.payload.email.trim().toLowerCase();
     if (state.users.some((user) => user.email.toLowerCase() === normalizedEmail)) {
       throw new Error("Сотрудник с таким email уже существует.");
@@ -526,6 +543,9 @@ export function applyCrmAction(action: CrmAction): CrmState {
   if (action.type === "start_warmup") {
     const lead = state.leads.find((item) => item.id === action.payload.leadId);
     const sequence = state.warmupSequences.find((item) => item.id === action.payload.sequenceId);
+    if (!lead) throw new Error("Лид не найден.");
+    if (!sequence) throw new Error("Цепочка прогрева не найдена.");
+    if (!sequence.active) throw new Error("Сначала включите выбранную цепочку прогрева.");
     if (lead && sequence) {
       lead.stage = Math.max(lead.stage, 6);
       lead.status = "warmup";
@@ -537,29 +557,81 @@ export function applyCrmAction(action: CrmAction): CrmState {
     }
   }
 
+  if (action.type === "create_warmup_sequence") {
+    if (state.warmupSequences.some((item) => item.name.trim().toLowerCase() === action.payload.name.trim().toLowerCase())) {
+      throw new Error("Цепочка с таким названием уже существует.");
+    }
+    state.warmupSequences.push({
+      id: id(),
+      name: action.payload.name.trim(),
+      description: action.payload.description.trim(),
+      active: action.payload.active,
+      steps: []
+    });
+  }
+
+  if (action.type === "update_warmup_sequence") {
+    const sequence = state.warmupSequences.find((item) => item.id === action.payload.sequenceId);
+    if (!sequence) throw new Error("Цепочка прогрева не найдена.");
+    if (state.warmupSequences.some((item) => item.id !== sequence.id && item.name.trim().toLowerCase() === action.payload.name.trim().toLowerCase())) {
+      throw new Error("Цепочка с таким названием уже существует.");
+    }
+    sequence.name = action.payload.name.trim();
+    sequence.description = action.payload.description.trim();
+    sequence.active = action.payload.active;
+  }
+
+  if (action.type === "delete_warmup_sequence") {
+    const sequence = state.warmupSequences.find((item) => item.id === action.payload.sequenceId);
+    if (!sequence) throw new Error("Цепочка прогрева не найдена.");
+    state.warmupSequences = state.warmupSequences.filter((item) => item.id !== sequence.id);
+    state.tasks = state.tasks.filter((task) => !task.automationKey?.startsWith(`warmup:${sequence.id}:`) || task.status !== "open");
+  }
+
   if (action.type === "create_warmup_step") {
     const sequence = state.warmupSequences.find((item) => item.id === action.payload.sequenceId);
-    if (sequence) {
-      sequence.steps.push({
-        id: id(),
-        day: Math.max(0, Math.floor(action.payload.day)),
-        title: action.payload.title,
-        message: action.payload.message,
-        contentType: "Custom",
-        attachmentUrl: action.payload.attachmentUrl,
-        attachmentType: action.payload.attachmentType,
-        attachmentName: action.payload.attachmentName
-      });
+    if (!sequence) throw new Error("Цепочка прогрева не найдена.");
+    sequence.steps.push({
+      id: id(),
+      day: Math.max(0, Math.floor(action.payload.day)),
+      title: action.payload.title,
+      message: action.payload.message,
+      contentType: action.payload.contentType ?? "Custom",
+      attachmentUrl: action.payload.attachmentUrl,
+      attachmentType: action.payload.attachmentType,
+      attachmentName: action.payload.attachmentName
+    });
+    sequence.steps.sort((a, b) => a.day - b.day || a.title.localeCompare(b.title, "ru"));
+  }
+
+  if (action.type === "update_warmup_step") {
+    const sequence = state.warmupSequences.find((item) => item.id === action.payload.sequenceId);
+    const step = sequence?.steps.find((item) => item.id === action.payload.stepId);
+    if (!sequence || !step) throw new Error("Шаг прогрева не найден.");
+    if (sequence && step) {
+      const dayDelta = Math.max(0, Math.floor(action.payload.day)) - step.day;
+      step.day = Math.max(0, Math.floor(action.payload.day));
+      step.title = action.payload.title.trim();
+      step.message = action.payload.message.trim();
+      step.contentType = action.payload.contentType;
+      step.attachmentUrl = action.payload.attachmentUrl ?? undefined;
+      step.attachmentType = action.payload.attachmentType ?? undefined;
+      step.attachmentName = action.payload.attachmentName ?? undefined;
+      state.tasks
+        .filter((task) => task.automationKey === `warmup:${sequence.id}:${step.id}` && task.status === "open")
+        .forEach((task) => {
+          task.title = `${step.title} · день ${step.day}`;
+          if (dayDelta) task.dueAt = shiftDate(task.dueAt, dayDelta);
+        });
       sequence.steps.sort((a, b) => a.day - b.day || a.title.localeCompare(b.title, "ru"));
     }
   }
 
   if (action.type === "delete_warmup_step") {
     const sequence = state.warmupSequences.find((item) => item.id === action.payload.sequenceId);
-    if (sequence) {
-      sequence.steps = sequence.steps.filter((step) => step.id !== action.payload.stepId);
-      state.tasks = state.tasks.filter((task) => task.automationKey !== `warmup:${sequence.id}:${action.payload.stepId}` || task.status !== "open");
-    }
+    if (!sequence || !sequence.steps.some((step) => step.id === action.payload.stepId)) throw new Error("Шаг прогрева не найден.");
+    sequence.steps = sequence.steps.filter((step) => step.id !== action.payload.stepId);
+    state.tasks = state.tasks.filter((task) => task.automationKey !== `warmup:${sequence.id}:${action.payload.stepId}` || task.status !== "open");
   }
 
   if (action.type === "mark_paid") {
@@ -667,6 +739,60 @@ export async function applyCrmActionsAsync(actions: CrmAction[]): Promise<CrmSta
 export async function persistCredentialsAsync() {
   if (!supabasePersistenceEnabled()) return;
   await writeSupabaseValue(credentialsKey, getCredentialsSnapshot());
+}
+
+export async function saveAiCallAnalysisAsync(input: {
+  leadId: string;
+  ownerId: string;
+  transcript: string;
+  recordingUrl?: string;
+  analysis: {
+    summary: string;
+    pain: string;
+    currentPromotionChannels: string;
+    budget: string;
+    objections: string[];
+    nextSteps: string[];
+    suggestedWarmupContent: string;
+    interest: number;
+    dealProbability: number;
+    managerMistakes: string[];
+  };
+}) {
+  globalForCrm.optiCrmState = await getCrmStateAsync();
+  const state = globalForCrm.optiCrmState;
+  const lead = state.leads.find((item) => item.id === input.leadId);
+  const owner = state.users.find((item) => item.id === input.ownerId && item.status === "active");
+  if (!lead || !owner) throw new Error("Лид или сотрудник не найден.");
+
+  const call: CrmState["callRecords"][number] = {
+    id: id(),
+    leadId: lead.id,
+    ownerId: owner.id,
+    recordingUrl: input.recordingUrl?.trim() || "",
+    transcript: input.transcript.trim(),
+    summary: input.analysis.summary,
+    objections: input.analysis.objections,
+    nextSteps: input.analysis.suggestedWarmupContent
+      ? [...input.analysis.nextSteps, `Контент для прогрева: ${input.analysis.suggestedWarmupContent}`]
+      : input.analysis.nextSteps,
+    interest: input.analysis.interest,
+    dealProbability: input.analysis.dealProbability,
+    managerMistakes: input.analysis.managerMistakes,
+    createdAt: today()
+  };
+  state.callRecords.unshift(call);
+  owner.calls += 1;
+  lead.lastContactAt = today();
+  if (input.analysis.pain) lead.pain = input.analysis.pain;
+  if (input.analysis.currentPromotionChannels) lead.currentPromotionChannels = input.analysis.currentPromotionChannels;
+  if (input.analysis.budget) lead.budget = input.analysis.budget;
+  lead.nextStep = input.analysis.nextSteps[0] ?? lead.nextStep;
+  lead.score = Math.min(100, Math.round((scoreLead(lead) + input.analysis.interest + input.analysis.dealProbability) / 3));
+  lead.temperature = temperature(lead.score);
+  addActivity(state, lead.id, "call", "AI-анализ звонка", input.analysis.summary);
+  await persistCrmStateAsync(state);
+  return structuredClone(call);
 }
 
 export async function setIntegrationStatusAsync(integrationId: string, status: CrmState["integrations"][number]["status"]) {

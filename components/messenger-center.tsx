@@ -2,7 +2,7 @@
 
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
-import { AlertCircle, ArrowLeft, Check, CheckCheck, Clock3, Film, ImageIcon, Link2, MessageCircle, Paperclip, PanelRight, RefreshCw, Search, Send, Trash2, UserRound, X } from "lucide-react";
+import { AlertCircle, ArrowLeft, Bot, Check, CheckCheck, Clock3, Film, ImageIcon, Link2, MessageCircle, Paperclip, PanelRight, RefreshCw, Search, Send, Trash2, UserRound, X } from "lucide-react";
 import { STAGES, type CrmState, type CrmUser } from "@/lib/crm/types";
 import type { MessengerChannel, MessengerConversation, MessengerMessage, OutgoingMediaAttachment } from "@/lib/messaging/types";
 import { uploadMediaFile, type UploadedMedia } from "@/lib/media/client";
@@ -266,6 +266,11 @@ export function MessengerCenter({ state, currentUser, onOpenLead, onCreateLead }
               <button onClick={() => setSelectedId("")} className="ui-button ui-button-secondary ui-icon-button md:hidden" aria-label="Назад к диалогам"><ArrowLeft size={17} /></button>
               <div className="min-w-0"><strong className="block truncate">{selected.contactName}</strong><span className="block truncate text-xs text-slate-500">{channelNames[selected.channel]} · {selected.phone || selected.username || selected.externalContactId}</span></div>
               {linkedLead && <button onClick={() => onOpenLead(linkedLead.id)} className="ml-auto hidden text-sm font-semibold text-[#4357D9] sm:block">{linkedLead.companyName}</button>}
+              {(["telegram", "whatsapp", "max"] as MessengerChannel[]).includes(selected.channel) && <button
+                onClick={() => void updateConversation({ aiMode: selected.aiMode === "auto" ? "paused" : "auto", status: selected.aiMode === "auto" ? "waiting" : "open" })}
+                className="ui-button ui-button-secondary shrink-0"
+                title={selected.aiMode === "auto" ? "Остановить автоматические AI-ответы" : "Вернуть автоматические AI-ответы"}
+              ><Bot size={16} /><span className="hidden lg:inline">{selected.aiMode === "auto" ? "AI отвечает" : "AI на паузе"}</span></button>}
               <button onClick={() => setShowDetails(true)} className="ui-button ui-button-secondary ui-icon-button ml-auto sm:ml-0 xl:hidden" title="Информация о клиенте" aria-label="Информация о клиенте"><PanelRight size={17} /></button>
             </header>
             <div ref={messageViewport} onScroll={(event) => { const node = event.currentTarget; shouldStickToBottom.current = node.scrollHeight - node.scrollTop - node.clientHeight < 80; }} className="messenger-message-list">
@@ -278,7 +283,7 @@ export function MessengerCenter({ state, currentUser, onOpenLead, onCreateLead }
                 <article key={message.id} className={clsx("messenger-bubble", message.direction === "outbound" ? "messenger-bubble-out" : "messenger-bubble-in", message.status === "failed" && "messenger-bubble-failed")}>
                   <MessageMedia message={message} />
                   {message.text && <p className="whitespace-pre-wrap break-words text-sm leading-5">{message.text}</p>}
-                  <footer className="mt-1 flex items-center justify-end gap-1 text-[11px] opacity-70"><time>{fullDate(message.sentAt)}</time>{message.direction === "outbound" && <DeliveryIcon status={message.status} />}</footer>
+                  <footer className="mt-1 flex items-center justify-end gap-1 text-[11px] opacity-70">{message.metadata.ai && <span>AI</span>}<time>{fullDate(message.sentAt)}</time>{message.direction === "outbound" && <DeliveryIcon status={message.status} />}</footer>
                   {message.errorReason && <p className="mt-2 border-t border-current/15 pt-2 text-xs">{message.errorReason}</p>}
                   {message.status === "failed" && <button disabled={sending} onClick={() => { const media = message.attachments.find((item): item is OutgoingMediaAttachment => (item.type === "image" || item.type === "video") && Boolean(item.url)); void send(message.text, media ?? null, false); }} className="mt-2 text-xs font-bold underline">Повторить безопасно</button>}
                 </article>
@@ -315,6 +320,7 @@ export function MessengerCenter({ state, currentUser, onOpenLead, onCreateLead }
             <div><dt className="text-xs text-slate-500">Канал</dt><dd className="mt-1 font-semibold">{channelNames[selected.channel]}</dd></div>
             <div><dt className="text-xs text-slate-500">Контакт</dt><dd className="mt-1 break-all font-semibold">{selected.phone || selected.username || selected.externalContactId}</dd></div>
             <div><dt className="text-xs text-slate-500">Состояние</dt><dd className="mt-1 font-semibold">{selected.needsReconnect ? "Ожидает /start у нового бота" : selected.status === "open" ? "Открыт" : selected.status === "waiting" ? "Ожидает ответа" : "Закрыт"}</dd></div>
+            {(["telegram", "whatsapp", "max"] as MessengerChannel[]).includes(selected.channel) && <div><dt className="text-xs text-slate-500">AI-автопилот</dt><dd className="mt-1 font-semibold">{selected.aiMode === "auto" ? "Отвечает автоматически" : "Передан менеджеру"}</dd></div>}
           </dl>
           <div className="border-t border-[#E5E7EB] pt-4">
             <div className="mb-2 flex items-center gap-2"><Link2 size={16} /><strong className="text-sm">Связь с CRM</strong></div>
@@ -328,6 +334,7 @@ export function MessengerCenter({ state, currentUser, onOpenLead, onCreateLead }
           {linkedLead && <div className="grid gap-3 border-t border-[#E5E7EB] pt-4 text-sm"><div><span className="text-xs text-slate-500">Лид</span><strong className="block">{linkedLead.companyName}</strong></div><div><span className="text-xs text-slate-500">Этап</span><strong className="block">{STAGES[linkedLead.stage]}</strong></div><div><span className="text-xs text-slate-500">Ответственный</span><strong className="block">{owner?.fullName ?? "Не назначен"}</strong></div><button onClick={() => onOpenLead(linkedLead.id)} className="ui-button ui-button-secondary">Открыть карточку лида</button></div>}
           <label className="ui-label border-t border-[#E5E7EB] pt-4">Заметки<textarea defaultValue={selected.notes} onBlur={(event) => { if (event.target.value !== selected.notes) void updateConversation({ notes: event.target.value }); }} rows={4} className="ui-field resize-y" placeholder="Контекст для команды" /></label>
           <label className="ui-label">Статус<select value={selected.status} onChange={(event) => void updateConversation({ status: event.target.value })} className="ui-field"><option value="open">Открыт</option><option value="waiting">Ожидает ответа</option><option value="closed">Закрыт</option></select></label>
+          {(["telegram", "whatsapp", "max"] as MessengerChannel[]).includes(selected.channel) && <label className="ui-label">AI-ответы<select value={selected.aiMode} onChange={(event) => void updateConversation({ aiMode: event.target.value })} className="ui-field"><option value="auto">Включены для диалога</option><option value="paused">На паузе</option></select></label>}
         </div>}
       </aside>
       {showDetails && <button className="messenger-details-backdrop xl:hidden" onClick={() => setShowDetails(false)} aria-label="Закрыть информацию о клиенте" />}

@@ -47,6 +47,7 @@ insert into public.integrations (id, name, description, status) values
 ('avito', 'Avito', 'Сообщения, заявки и звонки', 'needs_setup'),
 ('sheets', 'Google Sheets', 'Экспорт и сверка данных', 'needs_setup'),
 ('metrika', 'Яндекс Метрика', 'Посещения сайта и конверсии', 'needs_setup'),
+('ai', 'AI-ассистент', 'Анализ звонков, автоматические ответы и персонализация прогревов', 'needs_setup'),
 ('robokassa', 'RoboKassa', 'Оплаты подписок', 'needs_setup'),
 ('sip', 'SIP-телефония', 'Звонки, записи, автодозвон', 'needs_setup')
 on conflict (id) do update set status = excluded.status;

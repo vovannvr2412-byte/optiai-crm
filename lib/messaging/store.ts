@@ -79,6 +79,7 @@ function toConversation(row: unknown): MessengerConversation {
     leadId: item.lead_id ? String(item.lead_id) : undefined, ownerId: item.owner_id ? String(item.owner_id) : undefined,
     lastMessageText: String(item.last_message_text ?? ""), lastMessageAt: String(item.last_message_at),
     unreadCount: Number(item.unread_count ?? 0), status: item.status as MessengerConversation["status"],
+    aiMode: item.ai_mode === "paused" ? "paused" : "auto",
     notes: String(item.notes ?? ""), createdAt: String(item.created_at), updatedAt: String(item.updated_at)
   };
 }
@@ -112,7 +113,7 @@ async function accessContext(userId: string) {
 }
 
 async function allConversations() {
-  if (!supabasePersistenceEnabled()) return localSnapshot().conversations;
+  if (!supabasePersistenceEnabled()) return localSnapshot().conversations.map((conversation) => ({ ...conversation, aiMode: conversation.aiMode ?? "auto" }));
   const { data, error } = await createServiceSupabaseClient().from("messenger_conversations").select("*").order("last_message_at", { ascending: false });
   if (error) throw error;
   return (data ?? []).map(toConversation);
@@ -144,6 +145,32 @@ export async function getConversationForUser(userId: string, conversationId: str
   const conversation = conversations.find((item) => item.id === conversationId);
   if (!conversation) throw new Error("Диалог не найден или недоступен.");
   return conversation;
+}
+
+export async function getConversationSystem(conversationId: string) {
+  if (!supabasePersistenceEnabled()) {
+    const conversation = localSnapshot().conversations.find((item) => item.id === conversationId);
+    if (!conversation) throw new Error("Диалог не найден.");
+    return structuredClone({ ...conversation, aiMode: conversation.aiMode ?? "auto" });
+  }
+  const { data, error } = await createServiceSupabaseClient().from("messenger_conversations").select("*").eq("id", conversationId).single();
+  if (error) throw error;
+  return toConversation(data);
+}
+
+export async function listConversationMessagesSystem(conversationId: string, limit = 20) {
+  const safeLimit = Math.min(40, Math.max(1, limit));
+  if (!supabasePersistenceEnabled()) {
+    return localSnapshot().messages
+      .filter((item) => item.conversationId === conversationId)
+      .sort((a, b) => Date.parse(b.sentAt) - Date.parse(a.sentAt))
+      .slice(0, safeLimit)
+      .reverse();
+  }
+  const { data, error } = await createServiceSupabaseClient().from("messenger_messages").select("*")
+    .eq("conversation_id", conversationId).order("sent_at", { ascending: false }).limit(safeLimit);
+  if (error) throw error;
+  return (data ?? []).map(toMessage).reverse();
 }
 
 export async function getMessageForUser(userId: string, messageId: string) {
@@ -232,7 +259,7 @@ export async function markConversationRead(userId: string, conversationId: strin
   if (error) throw error;
 }
 
-export async function updateConversationForUser(userId: string, conversationId: string, changes: { leadId?: string | null; ownerId?: string | null; notes?: string; status?: MessengerConversation["status"] }) {
+export async function updateConversationForUser(userId: string, conversationId: string, changes: { leadId?: string | null; ownerId?: string | null; notes?: string; status?: MessengerConversation["status"]; aiMode?: MessengerConversation["aiMode"] }) {
   const [{ state, user }, conversation] = await Promise.all([accessContext(userId), getConversationForUser(userId, conversationId)]);
   if ((changes.leadId !== undefined || changes.ownerId !== undefined) && user.role !== "Руководитель" && user.role !== "РОП") throw new Error("Связь с лидом может изменить руководитель или РОП.");
   if (changes.leadId && !state.leads.some((item) => item.id === changes.leadId)) throw new Error("Выбранный лид не найден.");
@@ -246,6 +273,7 @@ export async function updateConversationForUser(userId: string, conversationId: 
       if (changes.ownerId !== undefined) item.ownerId = changes.ownerId ?? undefined;
       if (changes.notes !== undefined) item.notes = changes.notes.slice(0, 2000);
       if (changes.status !== undefined) item.status = changes.status;
+      if (changes.aiMode !== undefined) item.aiMode = changes.aiMode;
       item.updatedAt = updatedAt;
       return structuredClone(item);
     });
@@ -255,6 +283,26 @@ export async function updateConversationForUser(userId: string, conversationId: 
   if (changes.ownerId !== undefined) payload.owner_id = changes.ownerId;
   if (changes.notes !== undefined) payload.notes = changes.notes.slice(0, 2000);
   if (changes.status !== undefined) payload.status = changes.status;
+  if (changes.aiMode !== undefined) payload.ai_mode = changes.aiMode;
+  const { data, error } = await createServiceSupabaseClient().from("messenger_conversations").update(payload).eq("id", conversationId).select("*").single();
+  if (error) throw error;
+  return toConversation(data);
+}
+
+export async function updateConversationAiModeSystem(conversationId: string, aiMode: MessengerConversation["aiMode"], status?: MessengerConversation["status"]) {
+  const updatedAt = new Date().toISOString();
+  if (!supabasePersistenceEnabled()) {
+    return mutateLocal((snapshot) => {
+      const conversation = snapshot.conversations.find((item) => item.id === conversationId);
+      if (!conversation) throw new Error("Диалог не найден.");
+      conversation.aiMode = aiMode;
+      if (status) conversation.status = status;
+      conversation.updatedAt = updatedAt;
+      return structuredClone(conversation);
+    });
+  }
+  const payload: Record<string, unknown> = { ai_mode: aiMode, updated_at: updatedAt };
+  if (status) payload.status = status;
   const { data, error } = await createServiceSupabaseClient().from("messenger_conversations").update(payload).eq("id", conversationId).select("*").single();
   if (error) throw error;
   return toConversation(data);
@@ -341,6 +389,47 @@ export async function createPendingMessageOnce(userId: string, conversationId: s
   return { message: toMessage(data), created: true };
 }
 
+export async function createAiPendingMessageOnce(conversation: MessengerConversation, text: string, idempotencyKey: string, triggerMessageId: string) {
+  const now = new Date().toISOString();
+  const message: MessengerMessage = {
+    id: randomUUID(), conversationId: conversation.id, connectionId: conversation.connectionId, channel: conversation.channel,
+    idempotencyKey, direction: "outbound", senderName: "AI OptiAI", text: text.trim(), sentAt: now,
+    status: "pending", contentType: "text", attachments: [], metadata: { automated: true, ai: true, triggerMessageId }
+  };
+  if (!message.text) throw new Error("AI не подготовил текст ответа.");
+  if (message.text.length > 3500) throw new Error("AI-ответ превышает допустимую длину.");
+
+  if (!supabasePersistenceEnabled()) {
+    return mutateLocal((snapshot) => {
+      const existing = snapshot.messages.find((item) => item.idempotencyKey === idempotencyKey);
+      if (existing) return { message: structuredClone(existing), created: false };
+      snapshot.messages.push(message);
+      const item = snapshot.conversations.find((entry) => entry.id === conversation.id);
+      if (item) { item.lastMessageText = message.text; item.lastMessageAt = now; item.updatedAt = now; }
+      return { message: structuredClone(message), created: true };
+    });
+  }
+
+  const supabase = createServiceSupabaseClient();
+  const { data, error } = await supabase.from("messenger_messages").insert({
+    id: message.id, conversation_id: message.conversationId, connection_id: message.connectionId, channel: message.channel,
+    idempotency_key: message.idempotencyKey, direction: message.direction, sender_name: message.senderName,
+    text: message.text, sent_at: message.sentAt, status: message.status, content_type: message.contentType,
+    attachments: message.attachments, metadata: message.metadata
+  }).select("*").single();
+  if (error) {
+    if (error.code !== "23505") throw error;
+    const { data: existing, error: existingError } = await supabase.from("messenger_messages").select("*").eq("idempotency_key", idempotencyKey).single();
+    if (existingError) throw existingError;
+    return { message: toMessage(existing), created: false };
+  }
+  const { error: conversationError } = await supabase.from("messenger_conversations").update({
+    last_message_text: message.text, last_message_at: now, updated_at: now
+  }).eq("id", conversation.id);
+  if (conversationError) throw conversationError;
+  return { message: toMessage(data), created: true };
+}
+
 export async function finishOutgoingMessage(messageId: string, result: { status: MessageDeliveryStatus; externalMessageId?: string; errorReason?: string }) {
   const errorReason = result.errorReason ? safeProviderError(result.errorReason) : undefined;
   if (!supabasePersistenceEnabled()) {
@@ -381,7 +470,7 @@ export async function saveIncomingMessage(incoming: NormalizedIncomingMessage) {
           botExternalAccountId: incoming.botExternalAccountId, needsReconnect: false,
           contactName: incoming.contactName, phone: incoming.phone, username: incoming.username,
           lastMessageText: incoming.text, lastMessageAt: incoming.sentAt, unreadCount: 0,
-          status: "open", notes: "", createdAt: now, updatedAt: now
+          status: "open", aiMode: "auto", notes: "", createdAt: now, updatedAt: now
         };
         snapshot.conversations.push(conversation);
       }
@@ -428,7 +517,7 @@ export async function saveIncomingMessage(incoming: NormalizedIncomingMessage) {
       external_contact_id: incoming.externalContactId, contact_name: incoming.contactName, phone: incoming.phone,
       bot_external_account_id: incoming.botExternalAccountId ?? null, needs_reconnect: false,
       username: incoming.username, last_message_text: incoming.text, last_message_at: incoming.sentAt,
-      unread_count: 1, status: "open", notes: ""
+      unread_count: 1, status: "open", ai_mode: "auto", notes: ""
     }).select("*").single();
     if (error) throw error;
     conversation = toConversation(data);

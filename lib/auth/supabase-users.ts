@@ -55,6 +55,28 @@ export async function provisionSupabaseAuthUser(user: CrmUser, password: string)
   return authUser;
 }
 
+export async function createSupabaseAuthUser(user: CrmUser, password: string) {
+  const supabase = createServiceSupabaseClient();
+  const existing = await findAuthUserByEmail(user.email);
+  if (existing) throw new Error("Пользователь с таким email уже существует в Supabase Auth.");
+
+  const { data, error } = await supabase.auth.admin.createUser({
+    email: user.email,
+    password,
+    email_confirm: true,
+    ...userMetadata(user)
+  });
+  if (error) throw error;
+
+  try {
+    await linkCrmUser(user, data.user);
+    return data.user;
+  } catch (linkError) {
+    await supabase.auth.admin.deleteUser(data.user.id).catch(() => undefined);
+    throw linkError;
+  }
+}
+
 export async function inviteSupabaseAuthUser(user: CrmUser, redirectTo: string) {
   const supabase = createServiceSupabaseClient();
   const existing = await findAuthUserByEmail(user.email);

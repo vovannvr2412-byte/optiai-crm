@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getSessionUserId } from "@/lib/auth/session";
 import { providerFor } from "@/lib/messaging/providers";
-import { createPendingMessage, finishOutgoingMessage, getConversationForUser } from "@/lib/messaging/store";
+import { createPendingMessage, finishOutgoingMessage, getConversationForUser, updateConversationAiModeSystem } from "@/lib/messaging/store";
 import { safeProviderError } from "@/lib/messaging/config";
 import { isTrustedMediaUrl } from "@/lib/media/storage";
 
@@ -46,6 +46,7 @@ export async function POST(request: Request) {
         ? await adapter.sendMedia(conversation, parsed.data.attachment, message.text || undefined)
         : await adapter.sendText(conversation, message.text);
       const sent = await finishOutgoingMessage(message.id, result);
+      await updateConversationAiModeSystem(conversation.id, "paused");
       return NextResponse.json({ message: sent });
     } catch (error) {
       const reason = safeProviderError(error);

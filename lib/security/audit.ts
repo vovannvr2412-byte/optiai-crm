@@ -78,7 +78,7 @@ export async function listSecurityAudit(limit = 50): Promise<SecurityAuditEntry[
 export function auditDescriptor(action: CrmAction) {
   switch (action.type) {
     case "create_user":
-      return { action: "user.invited", entityType: "crm_user", details: { email: action.payload.email, role: action.payload.role } };
+      return { action: "user.created", entityType: "crm_user", details: { email: action.payload.email, role: action.payload.role } };
     case "disable_user":
       return { action: "user.disabled", entityType: "crm_user", entityId: action.payload.userId };
     case "delete_user":
@@ -96,6 +96,18 @@ export function auditDescriptor(action: CrmAction) {
         entityId: action.payload.leadId,
         details: { result: action.payload.result }
       };
+    case "create_warmup_sequence":
+      return { action: "warmup.sequence_created", entityType: "warmup_sequence", details: { name: action.payload.name } };
+    case "update_warmup_sequence":
+      return { action: "warmup.sequence_updated", entityType: "warmup_sequence", entityId: action.payload.sequenceId, details: { name: action.payload.name, active: action.payload.active } };
+    case "delete_warmup_sequence":
+      return { action: "warmup.sequence_deleted", entityType: "warmup_sequence", entityId: action.payload.sequenceId };
+    case "create_warmup_step":
+      return { action: "warmup.step_created", entityType: "warmup_sequence", entityId: action.payload.sequenceId, details: { day: action.payload.day, title: action.payload.title } };
+    case "update_warmup_step":
+      return { action: "warmup.step_updated", entityType: "warmup_sequence", entityId: action.payload.sequenceId, details: { stepId: action.payload.stepId, day: action.payload.day } };
+    case "delete_warmup_step":
+      return { action: "warmup.step_deleted", entityType: "warmup_sequence", entityId: action.payload.sequenceId, details: { stepId: action.payload.stepId } };
     case "assign_lead":
       return { action: "lead.assigned", entityType: "lead", entityId: action.payload.leadId, details: { ownerId: action.payload.ownerId } };
     case "delete_lead":

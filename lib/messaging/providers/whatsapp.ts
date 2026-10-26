@@ -91,6 +91,35 @@ export const whatsappAdapter: ProviderAdapter = {
     if (!externalMessageId) throw new Error("WhatsApp не вернул идентификатор сообщения.");
     return { externalMessageId, status: "sent" };
   },
+  async sendAutomationText(conversation, text) {
+    const secrets = await getMessengerSecrets("whatsapp");
+    const accessToken = secrets.WHATSAPP_ACCESS_TOKEN;
+    const phoneNumberId = secrets.WHATSAPP_PHONE_NUMBER_ID;
+    const version = secrets.WHATSAPP_GRAPH_VERSION || "v24.0";
+    const templateName = secrets.WHATSAPP_WARMUP_TEMPLATE_NAME;
+    const language = secrets.WHATSAPP_WARMUP_TEMPLATE_LANGUAGE || "ru";
+    if (!accessToken || !phoneNumberId) throw new Error("WhatsApp не настроен: отсутствуют серверные переменные Cloud API.");
+    if (!templateName) throw new Error("Для автоматического прогрева WhatsApp укажите одобренный Meta шаблон с одним текстовым параметром.");
+    const data = await providerJson(await fetch(graphUrl(version, `${phoneNumberId}/messages`), {
+      method: "POST",
+      headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        messaging_product: "whatsapp",
+        recipient_type: "individual",
+        to: conversation.externalConversationId,
+        type: "template",
+        template: {
+          name: templateName,
+          language: { code: language },
+          components: [{ type: "body", parameters: [{ type: "text", text }] }]
+        }
+      })
+    }));
+    const message = asRecord(asArray(data?.messages)[0]);
+    const externalMessageId = asString(message?.id);
+    if (!externalMessageId) throw new Error("WhatsApp не вернул идентификатор шаблонного сообщения.");
+    return { externalMessageId, status: "sent" };
+  },
   async sendMedia(conversation, attachment, caption) {
     const secrets = await getMessengerSecrets("whatsapp");
     const accessToken = secrets.WHATSAPP_ACCESS_TOKEN;
@@ -118,6 +147,34 @@ export const whatsappAdapter: ProviderAdapter = {
     const message = asRecord(asArray(data?.messages)[0]);
     const externalMessageId = asString(message?.id);
     if (!externalMessageId) throw new Error("WhatsApp не вернул идентификатор медиа-сообщения.");
+    return { externalMessageId, status: "sent" };
+  },
+  async sendAutomationMedia(conversation, attachment, caption) {
+    const secrets = await getMessengerSecrets("whatsapp");
+    const accessToken = secrets.WHATSAPP_ACCESS_TOKEN;
+    const phoneNumberId = secrets.WHATSAPP_PHONE_NUMBER_ID;
+    const version = secrets.WHATSAPP_GRAPH_VERSION || "v24.0";
+    const templateName = attachment.type === "image" ? secrets.WHATSAPP_WARMUP_IMAGE_TEMPLATE_NAME : secrets.WHATSAPP_WARMUP_VIDEO_TEMPLATE_NAME;
+    const language = secrets.WHATSAPP_WARMUP_TEMPLATE_LANGUAGE || "ru";
+    if (!accessToken || !phoneNumberId) throw new Error("WhatsApp не настроен: отсутствуют серверные переменные Cloud API.");
+    if (!templateName) throw new Error(`Для ${attachment.type === "image" ? "фото" : "видео"}-прогрева WhatsApp укажите отдельный одобренный шаблон Meta.`);
+    const mediaParameter = attachment.type === "image" ? { type: "image", image: { link: attachment.url } } : { type: "video", video: { link: attachment.url } };
+    const components: Record<string, unknown>[] = [{ type: "header", parameters: [mediaParameter] }];
+    if (caption) components.push({ type: "body", parameters: [{ type: "text", text: caption }] });
+    const data = await providerJson(await fetch(graphUrl(version, `${phoneNumberId}/messages`), {
+      method: "POST",
+      headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        messaging_product: "whatsapp",
+        recipient_type: "individual",
+        to: conversation.externalConversationId,
+        type: "template",
+        template: { name: templateName, language: { code: language }, components }
+      })
+    }));
+    const message = asRecord(asArray(data?.messages)[0]);
+    const externalMessageId = asString(message?.id);
+    if (!externalMessageId) throw new Error("WhatsApp не вернул идентификатор медиа-шаблона.");
     return { externalMessageId, status: "sent" };
   },
   async downloadAttachment(attachment) {

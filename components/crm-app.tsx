@@ -37,6 +37,7 @@ import { AccountPasswordForm } from "@/components/account-password-form";
 import type { CrmNotification } from "@/lib/notifications/store";
 import type { AutomationStatus } from "@/lib/automations/scheduler";
 import { readApiJson, readApiJsonOrNull } from "@/lib/api/client";
+import type { AiConfigurationSummary } from "@/lib/ai/types";
 
 type Bootstrap = {
   currentUser: CrmUser;
@@ -60,6 +61,7 @@ const auditActionLabels: Record<string, string> = {
   "auth.login": "Вход в CRM",
   "auth.password_changed": "Пароль изменен",
   "user.invited": "Сотрудник приглашен",
+  "user.created": "Аккаунт сотрудника создан",
   "user.disabled": "Аккаунт отключен",
   "user.deleted": "Аккаунт удален",
   "task.completed": "Задача выполнена",
@@ -73,10 +75,20 @@ const auditActionLabels: Record<string, string> = {
   "messenger.credentials_updated": "Ключи мессенджера обновлены",
   "messenger.credentials_deleted": "Ключи мессенджера удалены",
   "messenger.bot_replaced": "Telegram-бот заменён",
-  "messenger.connection_checked": "Подключение мессенджера проверено"
+  "messenger.connection_checked": "Подключение мессенджера проверено",
+  "warmup.sequence_created": "Цепочка прогрева создана",
+  "warmup.sequence_updated": "Цепочка прогрева изменена",
+  "warmup.sequence_deleted": "Цепочка прогрева удалена",
+  "warmup.step_created": "Шаг прогрева создан",
+  "warmup.step_updated": "Шаг прогрева изменён",
+  "warmup.step_deleted": "Шаг прогрева удалён",
+  "ai.configuration_updated": "Настройки AI обновлены",
+  "ai.configuration_deleted": "Настройки AI удалены",
+  "ai.connection_checked": "Подключение AI проверено",
+  "ai.call_analyzed": "Звонок проанализирован AI"
 };
 
-type Modal = "newUser" | "newLead" | "editLead" | "deleteLead" | "warmupStep" | "refusal" | "integration" | "password" | "rescheduleTask" | "callResult" | null;
+type Modal = "newUser" | "newLead" | "editLead" | "deleteLead" | "warmupSequence" | "warmupStep" | "assignWarmup" | "refusal" | "integration" | "password" | "rescheduleTask" | "callResult" | null;
 
 const navItems: { id: ViewId; icon: typeof LayoutDashboard }[] = [
   { id: "dashboard", icon: LayoutDashboard },
@@ -168,10 +180,11 @@ export function CrmApp() {
   const [modal, setModal] = useState<Modal>(null);
   const [selectedIntegrationId, setSelectedIntegrationId] = useState("");
   const [selectedTaskId, setSelectedTaskId] = useState("");
+  const [selectedWarmupSequenceId, setSelectedWarmupSequenceId] = useState("");
+  const [selectedWarmupStepId, setSelectedWarmupStepId] = useState("");
   const [taskFilter, setTaskFilter] = useState<"open" | "done" | "cancelled">("open");
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [pushSubscribed, setPushSubscribed] = useState(false);
-  const [testingPush, setTestingPush] = useState(false);
   const [toast, setToast] = useState("");
   const [loadingAction, setLoadingAction] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
@@ -315,30 +328,9 @@ export function CrmApp() {
       const saved = await readApiJsonOrNull<{ error?: string }>(saveResponse);
       if (!saveResponse.ok) throw new Error(saved?.error || "Не удалось сохранить подписку устройства.");
       setPushSubscribed(true);
-      const testResult = await sendTestPush();
-      setToast(testResult.message || "Push-уведомления включены, тестовое сообщение отправлено.");
+      setToast("Push-уведомления включены на этом устройстве.");
     } catch (error) {
       setToast(error instanceof Error ? error.message : "Не удалось включить push-уведомления.");
-    }
-  }
-
-  async function sendTestPush() {
-    const response = await fetch("/api/push/test", { method: "POST" });
-    const data = await readApiJson<{ message?: string; error?: string; sent?: number }>(response);
-    if (!response.ok || !data.sent) throw new Error(data.error || "Не удалось отправить тестовый push.");
-    return data;
-  }
-
-  async function testBrowserNotifications() {
-    if (testingPush) return;
-    setTestingPush(true);
-    try {
-      const result = await sendTestPush();
-      setToast(result.message || "Тестовое push-уведомление отправлено.");
-    } catch (error) {
-      setToast(error instanceof Error ? error.message : "Не удалось отправить тестовый push.");
-    } finally {
-      setTestingPush(false);
     }
   }
 
@@ -582,7 +574,7 @@ export function CrmApp() {
     }
 
     if (lead.stage === 5) {
-      return <button disabled={loadingAction} onClick={() => void runAction({ type: "start_warmup", payload: { leadId: lead.id, sequenceId: state.warmupSequences[0]?.id ?? "" } }, "Прогрев запущен по сценарию OptiAI.")} className={warning}>Далее: запустить прогрев</button>;
+      return <button disabled={loadingAction || !state.warmupSequences.some((sequence) => sequence.active)} onClick={() => { setSelectedLeadId(lead.id); setModal("assignWarmup"); }} className={warning}>Далее: выбрать прогрев</button>;
     }
 
     if (lead.stage === 6) {
@@ -685,12 +677,9 @@ export function CrmApp() {
             <span className="block truncate text-xs text-slate-400">{currentUser.email}</span>
             <span className="mt-2 inline-flex rounded-md bg-white/10 px-2 py-1 text-xs font-semibold text-slate-200">{currentUser.role}</span>
             <p className="mt-3 text-xs leading-5 text-slate-400">{roleDescriptions[currentUser.role]}</p>
-            <button onClick={() => setModal("password")} className="mt-3 flex items-center gap-2 text-xs font-semibold text-slate-200 hover:text-white">
-              <KeyRound size={14} /> Сменить пароль
-            </button>
           </div>
-          <button onClick={() => setModal("password")} className="crm-logout lg:hidden" aria-label="Сменить пароль">
-            <KeyRound size={17} /> <span>Пароль</span>
+          <button onClick={() => setModal("password")} className="crm-logout" aria-label="Сменить пароль">
+            <KeyRound size={17} /> <span>Сменить пароль</span>
           </button>
           <button
             type="button"
@@ -797,15 +786,6 @@ export function CrmApp() {
                   >
                     <Bell size={15} /> {pushSubscribed ? "Отключить push на этом устройстве" : "Включить фоновые push-уведомления"}
                   </button>
-                  {pushSubscribed && (
-                    <button
-                      disabled={testingPush}
-                      onClick={() => void testBrowserNotifications()}
-                      className="ui-button ui-button-secondary mt-2 w-full"
-                    >
-                      <Bell size={15} /> {testingPush ? "Отправляем..." : "Отправить тестовый push"}
-                    </button>
-                  )}
                 </div>
               )}
             </div>
@@ -1144,8 +1124,9 @@ export function CrmApp() {
               </div>
             </Panel>
 
-            <Panel title="Расшифровки и AI-анализ" subtitle="Появятся после подключения телефонии и сервиса записи звонков.">
+            <Panel title="Расшифровки и AI-анализ" subtitle="До подключения телефонии расшифровку можно вставить вручную; позднее этот endpoint примет её автоматически.">
               <div className="grid gap-3">
+                <AiCallAnalysisForm state={state} onSuccess={() => void load()} />
                 {state.callRecords.length === 0 && <EmptyState title="Записей звонков пока нет" text="Здесь появятся реальные записи, расшифровки и AI-анализ после звонков." />}
                 {state.callRecords.slice(0, 5).map((call) => {
                   const lead = state.leads.find((item) => item.id === call.leadId);
@@ -1168,39 +1149,82 @@ export function CrmApp() {
 
         {activeView === "warmup" && (
           <section className="grid grid-cols-[1.2fr_.8fr] gap-4 max-xl:grid-cols-1">
-            <Panel title="Цепочки прогрева" subtitle="Можно менять, создавать и назначать вручную.">
-              {state.warmupSequences.map((sequence) => (
-                <div key={sequence.id} className="grid gap-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <strong>{sequence.name}</strong>
-                      <p className="text-sm text-slate-600">{sequence.description}</p>
-                    </div>
-                    {(currentUser.role === "Руководитель" || currentUser.role === "РОП") && <button onClick={() => setModal("warmupStep")} className="ui-button ui-button-primary"><Plus size={16} /> Добавить шаг</button>}
-                  </div>
-                  {sequence.steps.length === 0 && <EmptyState title="Шагов пока нет" text="Добавьте первое касание для этой цепочки." />}
-                  {[...sequence.steps].sort((a, b) => a.day - b.day || a.title.localeCompare(b.title, "ru")).map((step) => (
-                    <div key={step.id} className="grid grid-cols-[80px_1fr_auto] items-center gap-3 rounded-lg border border-[#E5E7EB] bg-white p-3 max-md:grid-cols-1">
-                      <span className="grid min-h-11 place-items-center rounded-lg bg-[#EEF1FF] font-semibold text-[#4357D9]">День {step.day}</span>
+            <Panel
+              title="Цепочки прогрева"
+              subtitle="Создавайте отдельные сценарии, редактируйте шаги и управляйте доступностью назначения."
+              action={(currentUser.role === "Руководитель" || currentUser.role === "РОП") && (
+                <button onClick={() => { setSelectedWarmupSequenceId(""); setSelectedWarmupStepId(""); setModal("warmupSequence"); }} className="ui-button ui-button-primary">
+                  <Plus size={16} /> Новая цепочка
+                </button>
+              )}
+            >
+              <div className="grid gap-6">
+                {state.warmupSequences.length === 0 && <EmptyState title="Цепочек пока нет" text="Создайте первый сценарий прогрева и добавьте в него касания по дням." />}
+                {state.warmupSequences.map((sequence) => (
+                  <section key={sequence.id} className="grid gap-3 border-b border-slate-200 pb-6 last:border-0 last:pb-0">
+                    <div className="flex items-start justify-between gap-3 max-md:flex-col">
                       <div className="min-w-0">
-                        <strong>{step.title}</strong>
-                        <p className="text-sm text-slate-600">{step.message}</p>
-                        {step.attachmentUrl && <a href={step.attachmentUrl} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-2 text-sm font-semibold text-[#4357D9]">
-                          {step.attachmentType === "video" ? <Film size={16} /> : <ImageIcon size={16} />}
-                          {step.attachmentName || (step.attachmentType === "video" ? "Видео" : "Изображение")}
-                        </a>}
+                        <div className="flex flex-wrap items-center gap-2">
+                          <strong>{sequence.name}</strong>
+                          <Badge>{sequence.active ? "доступна" : "отключена"}</Badge>
+                          <span className="text-xs font-semibold text-slate-500">{sequence.steps.length} шагов</span>
+                        </div>
+                        <p className="mt-1 text-sm text-slate-600">{sequence.description || "Описание не заполнено"}</p>
                       </div>
-                      {(currentUser.role === "Руководитель" || currentUser.role === "РОП") && <button
-                        disabled={loadingAction}
-                        onClick={() => void runAction({ type: "delete_warmup_step", payload: { sequenceId: sequence.id, stepId: step.id } }, `Шаг «${step.title}» удалён.`)}
-                        className="ui-button ui-button-secondary ui-icon-button text-[#C43B4D]"
-                        title="Удалить шаг"
-                        aria-label={`Удалить шаг ${step.title}`}
-                      ><Trash2 size={16} /></button>}
+                      {(currentUser.role === "Руководитель" || currentUser.role === "РОП") && (
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            onClick={() => { setSelectedWarmupSequenceId(sequence.id); setSelectedWarmupStepId(""); setModal("warmupStep"); }}
+                            className="ui-button ui-button-primary"
+                          ><Plus size={16} /> Добавить шаг</button>
+                          <button
+                            onClick={() => { setSelectedWarmupSequenceId(sequence.id); setModal("warmupSequence"); }}
+                            className="ui-button ui-button-secondary ui-icon-button"
+                            title="Изменить цепочку"
+                            aria-label={`Изменить цепочку ${sequence.name}`}
+                          ><Pencil size={16} /></button>
+                          <button
+                            disabled={loadingAction}
+                            onClick={() => window.confirm(`Удалить цепочку «${sequence.name}» и её незавершённые задачи?`) && void runAction({ type: "delete_warmup_sequence", payload: { sequenceId: sequence.id } }, `Цепочка «${sequence.name}» удалена.`)}
+                            className="ui-button ui-button-secondary ui-icon-button text-[#C43B4D]"
+                            title="Удалить цепочку"
+                            aria-label={`Удалить цепочку ${sequence.name}`}
+                          ><Trash2 size={16} /></button>
+                        </div>
+                      )}
                     </div>
-                  ))}
-                </div>
-              ))}
+                    {sequence.steps.length === 0 && <EmptyState title="Шагов пока нет" text="Добавьте первое касание для этой цепочки." />}
+                    {[...sequence.steps].sort((a, b) => a.day - b.day || a.title.localeCompare(b.title, "ru")).map((step) => (
+                      <div key={step.id} className="grid grid-cols-[80px_1fr_auto] items-center gap-3 rounded-lg border border-[#E5E7EB] bg-white p-3 max-md:grid-cols-1">
+                        <span className="grid min-h-11 place-items-center rounded-lg bg-[#EEF1FF] font-semibold text-[#4357D9]">День {step.day}</span>
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2"><strong>{step.title}</strong><Badge>{step.contentType}</Badge></div>
+                          <p className="mt-1 text-sm text-slate-600">{step.message}</p>
+                          {step.attachmentUrl && <a href={step.attachmentUrl} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-2 text-sm font-semibold text-[#4357D9]">
+                            {step.attachmentType === "video" ? <Film size={16} /> : <ImageIcon size={16} />}
+                            {step.attachmentName || (step.attachmentType === "video" ? "Видео" : "Изображение")}
+                          </a>}
+                        </div>
+                        {(currentUser.role === "Руководитель" || currentUser.role === "РОП") && <div className="flex gap-2">
+                          <button
+                            onClick={() => { setSelectedWarmupSequenceId(sequence.id); setSelectedWarmupStepId(step.id); setModal("warmupStep"); }}
+                            className="ui-button ui-button-secondary ui-icon-button"
+                            title="Изменить шаг"
+                            aria-label={`Изменить шаг ${step.title}`}
+                          ><Pencil size={16} /></button>
+                          <button
+                            disabled={loadingAction}
+                            onClick={() => window.confirm(`Удалить шаг «${step.title}»?`) && void runAction({ type: "delete_warmup_step", payload: { sequenceId: sequence.id, stepId: step.id } }, `Шаг «${step.title}» удалён.`)}
+                            className="ui-button ui-button-secondary ui-icon-button text-[#C43B4D]"
+                            title="Удалить шаг"
+                            aria-label={`Удалить шаг ${step.title}`}
+                          ><Trash2 size={16} /></button>
+                        </div>}
+                      </div>
+                    ))}
+                  </section>
+                ))}
+              </div>
             </Panel>
 
             <Panel title="Назначить прогрев" subtitle="Цепочка создаст задачи ответственному по дням.">
@@ -1311,7 +1335,7 @@ export function CrmApp() {
 
             <Panel title="Журнал безопасности" subtitle="Последние входы и административные действия без паролей и API-ключей.">
               <div className="grid gap-2">
-                {(bootstrap.auditLog ?? []).length === 0 && <EmptyState title="Событий пока нет" text="Новые входы, приглашения и изменения интеграций появятся здесь." />}
+                {(bootstrap.auditLog ?? []).length === 0 && <EmptyState title="Событий пока нет" text="Новые входы, аккаунты сотрудников и изменения интеграций появятся здесь." />}
                 {(bootstrap.auditLog ?? []).map((entry) => (
                   <div key={entry.id} className="grid grid-cols-[1fr_auto] items-center gap-3 border-b border-slate-100 py-2 last:border-0 max-sm:grid-cols-1">
                     <div>
@@ -1389,7 +1413,7 @@ export function CrmApp() {
           setModal(null);
           if (refreshAfterClose) void load();
         }}>
-          {modal === "newUser" && <NewUserForm currentUser={currentUser} onSubmit={async (action) => { const ok = await runAction(action, "Приглашение отправлено сотруднику."); if (ok) setModal(null); }} />}
+          {modal === "newUser" && <NewUserForm currentUser={currentUser} submitting={loadingAction} onSubmit={async (action) => { const ok = await runAction(action, "Аккаунт сотрудника создан. Передайте ему email и временный пароль."); if (ok) setModal(null); }} />}
           {modal === "password" && <AccountPasswordForm onCancel={() => setModal(null)} onSuccess={() => { setBootstrap(null); setModal(null); }} />}
           {modal === "rescheduleTask" && state.tasks.find((task) => task.id === selectedTaskId) && (
             <RescheduleTaskForm
@@ -1438,7 +1462,41 @@ export function CrmApp() {
               }}
             />
           )}
-          {modal === "warmupStep" && <WarmupForm sequenceId={state.warmupSequences[0]?.id} onSubmit={async (action) => { const ok = await runAction(action, "Шаг прогрева добавлен."); if (ok) setModal(null); return ok; }} />}
+          {modal === "warmupSequence" && (
+            <WarmupSequenceForm
+              sequence={state.warmupSequences.find((sequence) => sequence.id === selectedWarmupSequenceId)}
+              submitting={loadingAction}
+              onSubmit={async (action) => {
+                const ok = await runAction(action, action.type === "create_warmup_sequence" ? "Цепочка прогрева создана." : "Настройки цепочки сохранены.");
+                if (ok) setModal(null);
+              }}
+            />
+          )}
+          {modal === "warmupStep" && (
+            <WarmupForm
+              sequenceId={selectedWarmupSequenceId}
+              step={state.warmupSequences.find((sequence) => sequence.id === selectedWarmupSequenceId)?.steps.find((step) => step.id === selectedWarmupStepId)}
+              onSubmit={async (action) => {
+                const ok = await runAction(action, action.type === "create_warmup_step" ? "Шаг прогрева добавлен." : "Шаг прогрева сохранён.");
+                if (ok) setModal(null);
+                return ok;
+              }}
+            />
+          )}
+          {modal === "assignWarmup" && selectedLead && (
+            <WarmupAssignmentForm
+              state={state}
+              initialLeadId={selectedLead.id}
+              lockLead
+              submitting={loadingAction}
+              onAssign={async (leadId, sequenceId) => {
+                const sequence = state.warmupSequences.find((item) => item.id === sequenceId);
+                const ok = await runAction({ type: "start_warmup", payload: { leadId, sequenceId } }, `Прогрев «${sequence?.name ?? "сценарий"}» назначен лиду.`);
+                if (ok) setModal(null);
+                return ok;
+              }}
+            />
+          )}
           {modal === "refusal" && selectedLead && <RefusalForm leadId={selectedLead.id} onSubmit={async (action) => { const ok = await runAction(action, "Отказ сохранен с причиной."); if (ok) setModal(null); }} />}
           {modal === "integration" && (
             <IntegrationForm
@@ -1785,6 +1843,50 @@ function ModalShell({ children, onClose }: { children: React.ReactNode; onClose:
   );
 }
 
+function AiCallAnalysisForm({ state, onSuccess }: { state: CrmState; onSuccess: () => void | Promise<void> }) {
+  const [submitting, setSubmitting] = useState(false);
+  const [message, setMessage] = useState("");
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const data = Object.fromEntries(new FormData(form).entries()) as Record<string, string>;
+    setSubmitting(true);
+    setMessage("");
+    try {
+      const response = await fetch("/api/ai/analyze-call", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ leadId: data.leadId, transcript: data.transcript, recordingUrl: data.recordingUrl })
+      });
+      const result = await readApiJson<{ analysis?: { summary?: string }; provider?: string; model?: string; error?: string }>(response);
+      if (!response.ok) throw new Error(result.error || "Не удалось выполнить AI-анализ.");
+      setMessage(`Анализ сохранён${result.provider ? ` · ${result.provider}` : ""}${result.model ? ` · ${result.model}` : ""}.`);
+      form.reset();
+      await onSuccess();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Не удалось выполнить AI-анализ.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <form onSubmit={submit} className="mb-3 grid gap-3 border-b border-slate-200 pb-4">
+      <div className="grid grid-cols-2 gap-3 max-md:grid-cols-1">
+        <label className="ui-label">Лид<select name="leadId" className="ui-field" required>
+          {state.leads.length === 0 && <option value="">Нет доступных лидов</option>}
+          {state.leads.map((lead) => <option key={lead.id} value={lead.id}>{lead.companyName} · {lead.contactName}</option>)}
+        </select></label>
+        <FormInput name="recordingUrl" label="Ссылка на запись (необязательно)" type="url" placeholder="https://..." />
+      </div>
+      <label className="ui-label">Расшифровка разговора<textarea name="transcript" minLength={30} maxLength={120000} rows={6} required className="ui-field resize-y" placeholder="Вставьте реальную расшифровку звонка" /></label>
+      {message && <div role="status" className="rounded-lg border border-[#DCE2EA] bg-slate-50 p-3 text-sm text-slate-700">{message}</div>}
+      <button disabled={submitting || state.leads.length === 0} className="ui-button ui-button-primary">{submitting ? "Анализируем..." : "Проанализировать разговор"}</button>
+    </form>
+  );
+}
+
 function CallResultForm({
   lead,
   ownerId,
@@ -1893,7 +1995,8 @@ function RescheduleTaskForm({ task, onSubmit, onCancel }: {
   );
 }
 
-function NewUserForm({ currentUser, onSubmit }: { currentUser: CrmUser; onSubmit: (action: CrmAction) => void | Promise<void> }) {
+function NewUserForm({ currentUser, submitting, onSubmit }: { currentUser: CrmUser; submitting: boolean; onSubmit: (action: CrmAction) => void | Promise<void> }) {
+  const [error, setError] = useState("");
   const allowedRoles: Role[] = currentUser.role === "Руководитель"
     ? ["Менеджер", "Аккаунт-менеджер", "РОП", "Руководитель"]
     : ["Менеджер", "Аккаунт-менеджер"];
@@ -1901,7 +2004,12 @@ function NewUserForm({ currentUser, onSubmit }: { currentUser: CrmUser; onSubmit
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const data = Object.fromEntries(new FormData(event.currentTarget).entries()) as Record<string, string>;
-    void onSubmit({ type: "create_user", payload: { fullName: data.fullName, email: data.email, role: data.role as Role, position: data.position } });
+    if (data.password !== data.passwordConfirmation) {
+      setError("Пароли не совпадают.");
+      return;
+    }
+    setError("");
+    void onSubmit({ type: "create_user", payload: { fullName: data.fullName, email: data.email, role: data.role as Role, position: data.position, password: data.password } });
   }
 
   return (
@@ -1909,7 +2017,9 @@ function NewUserForm({ currentUser, onSubmit }: { currentUser: CrmUser; onSubmit
       <h2 className="pr-12 text-xl font-bold text-[#202939]">Добавить сотрудника</h2>
       <FormInput name="fullName" label="Имя и фамилия" required />
       <FormInput name="email" label="Email" type="email" required />
-      <p className="text-sm leading-5 text-slate-600">Сотрудник получит письмо от Supabase и сам задаст персональный пароль. Руководитель пароль не увидит.</p>
+      <FormInput name="password" label="Временный пароль" type="password" minLength={10} autoComplete="new-password" required />
+      <FormInput name="passwordConfirmation" label="Повторите пароль" type="password" minLength={10} autoComplete="new-password" required />
+      <p className="text-sm leading-5 text-slate-600">Минимум 10 символов, включая буквы и цифры. Передайте пароль сотруднику безопасным способом: после входа он сможет заменить его через «Сменить пароль».</p>
       <label className="ui-label">
         Роль
         <select name="role" className="ui-field">
@@ -1917,7 +2027,8 @@ function NewUserForm({ currentUser, onSubmit }: { currentUser: CrmUser; onSubmit
         </select>
       </label>
       <FormInput name="position" label="Должность" required />
-      <button className="ui-button ui-button-primary">Отправить приглашение</button>
+      {error && <div role="alert" className="rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">{error}</div>}
+      <button disabled={submitting} className="ui-button ui-button-primary">{submitting ? "Создаём..." : "Создать аккаунт"}</button>
     </form>
   );
 }
@@ -1979,7 +2090,11 @@ const messengerCredentialFields: Record<MessengerChannel, { name: string; label:
     { name: "WHATSAPP_BUSINESS_ACCOUNT_ID", label: "Business Account ID", placeholder: "Необязательно" },
     { name: "WHATSAPP_VERIFY_TOKEN", label: "Verify Token", type: "password", placeholder: "Строка для проверки webhook" },
     { name: "WHATSAPP_APP_SECRET", label: "App Secret", type: "password", placeholder: "Секрет приложения Meta" },
-    { name: "WHATSAPP_GRAPH_VERSION", label: "Graph API Version", placeholder: "Например, v24.0" }
+    { name: "WHATSAPP_GRAPH_VERSION", label: "Graph API Version", placeholder: "Например, v24.0" },
+    { name: "WHATSAPP_WARMUP_TEMPLATE_NAME", label: "Текстовый шаблон прогрева", placeholder: "Одобренный шаблон с одним параметром текста" },
+    { name: "WHATSAPP_WARMUP_IMAGE_TEMPLATE_NAME", label: "Шаблон прогрева с фото", placeholder: "Шаблон с image header и параметром текста" },
+    { name: "WHATSAPP_WARMUP_VIDEO_TEMPLATE_NAME", label: "Шаблон прогрева с видео", placeholder: "Шаблон с video header и параметром текста" },
+    { name: "WHATSAPP_WARMUP_TEMPLATE_LANGUAGE", label: "Язык шаблона", placeholder: "Например, ru" }
   ],
   max: [
     { name: "MAX_BOT_TOKEN", label: "Bot Token", type: "password", placeholder: "Токен бота MAX" },
@@ -2000,6 +2115,116 @@ const messengerCredentialFields: Record<MessengerChannel, { name: string; label:
   ]
 };
 
+function AiIntegrationForm() {
+  const [summary, setSummary] = useState<AiConfigurationSummary | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState<"save" | "check" | "delete" | "">("");
+  const [message, setMessage] = useState("");
+
+  const loadConfiguration = useCallback(async () => {
+    setLoading(true);
+    try {
+      const response = await fetch("/api/ai/config", { cache: "no-store" });
+      const data = await readApiJson<{ configuration?: AiConfigurationSummary; error?: string }>(response);
+      if (!response.ok) throw new Error(data.error || "Не удалось получить настройки AI.");
+      setSummary(data.configuration ?? null);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Не удалось получить настройки AI.");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    // The protected server response is the source of truth for masked AI settings.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void loadConfiguration();
+  }, [loadConfiguration]);
+
+  async function request(method: "POST" | "DELETE") {
+    setBusy(method === "POST" ? "check" : "delete");
+    setMessage("");
+    try {
+      const response = await fetch("/api/ai/config", { method });
+      const data = await readApiJson<{ configuration?: AiConfigurationSummary; message?: string; error?: string }>(response);
+      if (data.configuration) setSummary(data.configuration);
+      if (!response.ok) throw new Error(data.error || "Операция с AI не выполнена.");
+      setMessage(data.message || "Операция выполнена.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Операция с AI не выполнена.");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBusy("save");
+    setMessage("");
+    const formData = new FormData(event.currentTarget);
+    const data = Object.fromEntries(formData.entries()) as Record<string, string>;
+    try {
+      const response = await fetch("/api/ai/config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          provider: data.provider,
+          model: data.model,
+          apiKey: data.apiKey,
+          baseUrl: data.baseUrl,
+          autoReplyEnabled: formData.get("autoReplyEnabled") === "on",
+          warmupEnabled: formData.get("warmupEnabled") === "on",
+          channels: formData.getAll("channels").map(String),
+          companyContext: data.companyContext,
+          replyInstructions: data.replyInstructions
+        })
+      });
+      const result = await readApiJson<{ configuration?: AiConfigurationSummary; message?: string; error?: string }>(response);
+      if (result.configuration) setSummary(result.configuration);
+      if (!response.ok) throw new Error(result.error || "Не удалось подключить AI.");
+      setMessage(result.message || "AI подключён.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Не удалось подключить AI.");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  if (loading) return <div className="py-8 text-center text-sm text-slate-500">Загружаем настройки AI...</div>;
+
+  return (
+    <form onSubmit={submit} className="grid gap-4">
+      <div>
+        <h2 className="pr-12 text-xl font-bold text-[#202939]">Настроить AI-ассистента</h2>
+        <p className="mt-1 text-sm leading-5 text-slate-600">Один защищённый ключ используется для анализа звонков, ответов клиентам и персонализации прогревов.</p>
+      </div>
+      <label className="ui-label">Провайдер<select name="provider" defaultValue={summary?.provider ?? "openai"} className="ui-field">
+        <option value="openai">OpenAI</option><option value="anthropic">Claude / Anthropic</option><option value="gemini">Google Gemini</option>
+      </select></label>
+      <FormInput name="model" label="Модель" defaultValue={summary?.model ?? ""} placeholder="Точное название модели из кабинета провайдера" required />
+      <FormInput name="apiKey" label="API-ключ" type="password" placeholder={summary?.hasApiKey ? "Оставьте пустым без изменений" : "Вставьте секретный API-ключ"} autoComplete="new-password" required={!summary?.hasApiKey} />
+      <FormInput name="baseUrl" label="Base URL" defaultValue={summary?.baseUrl ?? ""} placeholder="Обычно менять не требуется" />
+      <fieldset className="grid gap-3 rounded-lg border border-[#E5E7EB] p-3">
+        <legend className="px-1 text-sm font-bold text-[#202939]">Автоматизация сообщений</legend>
+        <label className="flex items-center gap-3 text-sm font-semibold text-slate-700"><input name="autoReplyEnabled" type="checkbox" defaultChecked={summary?.autoReplyEnabled} className="size-4 accent-[#536DFE]" /> Автоматически отвечать на входящие сообщения</label>
+        <label className="flex items-center gap-3 text-sm font-semibold text-slate-700"><input name="warmupEnabled" type="checkbox" defaultChecked={summary?.warmupEnabled} className="size-4 accent-[#536DFE]" /> Персонализировать тексты прогрева через AI</label>
+        <div><span className="ui-label">Каналы автопилота</span><div className="mt-2 flex flex-wrap gap-4">
+          {([{"id":"telegram","label":"Telegram"},{"id":"whatsapp","label":"WhatsApp"},{"id":"max","label":"MAX"}] as const).map((channel) => <label key={channel.id} className="flex items-center gap-2 text-sm font-semibold text-slate-700"><input name="channels" value={channel.id} type="checkbox" defaultChecked={summary?.channels.includes(channel.id) ?? true} className="size-4 accent-[#536DFE]" />{channel.label}</label>)}
+        </div></div>
+      </fieldset>
+      <label className="ui-label">Проверенные сведения о компании и услугах<textarea name="companyContext" defaultValue={summary?.companyContext ?? ""} rows={5} maxLength={6000} className="ui-field resize-y" placeholder="Что продаём, кому, преимущества, подтверждённые цены и ограничения" /></label>
+      <label className="ui-label">Правила общения<textarea name="replyInstructions" defaultValue={summary?.replyInstructions ?? ""} rows={4} maxLength={4000} className="ui-field resize-y" placeholder="Тон, вопросы квалификации, когда передавать диалог менеджеру" /></label>
+      {message && <div role="status" className="rounded-lg border border-[#DCE2EA] bg-slate-50 p-3 text-sm text-slate-700">{message}</div>}
+      <div className="flex flex-wrap gap-2">
+        <button disabled={Boolean(busy)} className="ui-button ui-button-primary">{busy === "save" ? "Проверяем..." : "Сохранить и проверить"}</button>
+        <button type="button" disabled={Boolean(busy) || !summary?.configured} onClick={() => void request("POST")} className="ui-button ui-button-secondary">{busy === "check" ? "Проверяем..." : "Проверить подключение"}</button>
+        <button type="button" disabled={Boolean(busy) || !summary?.hasApiKey} onClick={() => void request("DELETE")} className="ui-button ui-button-secondary text-[#C43B4D]">{busy === "delete" ? "Удаляем..." : "Удалить ключ"}</button>
+      </div>
+      <p className="text-xs leading-5 text-slate-500">AI отвечает только в выбранных каналах. Вложения, жалобы, договоры, платежи, индивидуальные цены и запрос человека автоматически передаются менеджеру. Ручной ответ ставит AI на паузу в этом диалоге.</p>
+    </form>
+  );
+}
+
 function IntegrationForm({ integration, onSubmit }: { integration?: CrmState["integrations"][number]; onSubmit: (action: CrmAction) => void }) {
   if (!integration) {
     return <EmptyState title="Интеграция не найдена" text="Закройте окно и выберите интеграцию заново." />;
@@ -2009,6 +2234,7 @@ function IntegrationForm({ integration, onSubmit }: { integration?: CrmState["in
   if (currentIntegration.id === "telegram" || currentIntegration.id === "whatsapp" || currentIntegration.id === "max" || currentIntegration.id === "instagram" || currentIntegration.id === "avito") {
     return <MessengerIntegrationForm channel={currentIntegration.id} />;
   }
+  if (currentIntegration.id === "ai") return <AiIntegrationForm />;
   if (currentIntegration.id === "sheets" || currentIntegration.id === "metrika") return <ExternalIntegrationForm integration={currentIntegration} />;
   const fields = integrationFieldMap[currentIntegration.id] ?? [
     { name: "apiKey", label: "API Key" },
@@ -2536,23 +2762,63 @@ function NewLeadForm({ state, currentUser, onSubmit }: { state: CrmState; curren
   );
 }
 
-function WarmupAssignmentForm({ state, submitting, onAssign }: { state: CrmState; submitting: boolean; onAssign: (leadId: string, sequenceId: string) => Promise<boolean> }) {
-  const [leadId, setLeadId] = useState(state.leads[0]?.id ?? "");
-  const [sequenceId, setSequenceId] = useState(state.warmupSequences[0]?.id ?? "");
+function WarmupSequenceForm({ sequence, submitting, onSubmit }: {
+  sequence?: CrmState["warmupSequences"][number];
+  submitting: boolean;
+  onSubmit: (action: CrmAction) => void | Promise<void>;
+}) {
+  function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    const payload = {
+      name: String(data.get("name") ?? "").trim(),
+      description: String(data.get("description") ?? "").trim(),
+      active: data.get("active") === "on"
+    };
+    void onSubmit(sequence
+      ? { type: "update_warmup_sequence", payload: { sequenceId: sequence.id, ...payload } }
+      : { type: "create_warmup_sequence", payload });
+  }
 
-  return <form onSubmit={(event) => { event.preventDefault(); if (leadId && sequenceId) void onAssign(leadId, sequenceId); }} className="grid gap-3">
-    <label className="ui-label">Лид<select value={leadId} onChange={(event) => setLeadId(event.target.value)} className="ui-field" required>
+  return (
+    <form onSubmit={submit} className="grid gap-4">
+      <div>
+        <h2 className="pr-12 text-xl font-bold text-[#202939]">{sequence ? "Изменить цепочку" : "Новая цепочка"}</h2>
+        <p className="mt-1 text-sm leading-5 text-slate-600">Отключённую цепочку нельзя назначать новым лидам, но уже отправленная история сохранится.</p>
+      </div>
+      <FormInput name="name" label="Название" defaultValue={sequence?.name ?? ""} required />
+      <label className="ui-label">Описание<textarea name="description" defaultValue={sequence?.description ?? ""} rows={3} maxLength={1000} className="ui-field resize-y" /></label>
+      <label className="flex min-h-11 items-center gap-3 rounded-lg border border-[#D0D5DD] bg-white px-3 text-sm font-semibold text-[#344054]">
+        <input name="active" type="checkbox" defaultChecked={sequence?.active ?? true} className="size-4 accent-[#536DFE]" />
+        Доступна для назначения
+      </label>
+      <button disabled={submitting} className="ui-button ui-button-primary">{submitting ? "Сохраняем..." : sequence ? "Сохранить" : "Создать цепочку"}</button>
+    </form>
+  );
+}
+
+function WarmupAssignmentForm({ state, submitting, onAssign, initialLeadId, lockLead = false }: { state: CrmState; submitting: boolean; onAssign: (leadId: string, sequenceId: string) => Promise<boolean>; initialLeadId?: string; lockLead?: boolean }) {
+  const activeSequences = state.warmupSequences.filter((sequence) => sequence.active);
+  const [leadId, setLeadId] = useState(initialLeadId ?? state.leads[0]?.id ?? "");
+  const [sequenceId, setSequenceId] = useState(activeSequences[0]?.id ?? "");
+  const currentLeadId = state.leads.some((lead) => lead.id === leadId) ? leadId : state.leads[0]?.id ?? "";
+  const currentSequenceId = activeSequences.some((sequence) => sequence.id === sequenceId) ? sequenceId : activeSequences[0]?.id ?? "";
+
+  return <form onSubmit={(event) => { event.preventDefault(); if (currentLeadId && currentSequenceId) void onAssign(currentLeadId, currentSequenceId); }} className="grid gap-3">
+    {lockLead && <div><h2 className="pr-12 text-xl font-bold text-[#202939]">Выбрать цепочку прогрева</h2><p className="mt-1 text-sm text-slate-600">Назначение создаст задачи по дням и запустит автоматическую отправку.</p></div>}
+    <label className="ui-label">Лид<select value={currentLeadId} onChange={(event) => setLeadId(event.target.value)} className="ui-field" required disabled={lockLead}>
       {state.leads.length === 0 && <option value="">Нет доступных лидов</option>}
       {state.leads.map((lead) => <option key={lead.id} value={lead.id}>{lead.companyName} · {lead.contactName}</option>)}
     </select></label>
-    <label className="ui-label">Цепочка<select value={sequenceId} onChange={(event) => setSequenceId(event.target.value)} className="ui-field" required>
-      {state.warmupSequences.map((sequence) => <option key={sequence.id} value={sequence.id}>{sequence.name}</option>)}
+    <label className="ui-label">Цепочка<select value={currentSequenceId} onChange={(event) => setSequenceId(event.target.value)} className="ui-field" required>
+      {activeSequences.length === 0 && <option value="">Нет включённых цепочек</option>}
+      {activeSequences.map((sequence) => <option key={sequence.id} value={sequence.id}>{sequence.name} · {sequence.steps.length} шагов</option>)}
     </select></label>
-    <button disabled={submitting || !leadId || !sequenceId} className="ui-button ui-button-primary">{submitting ? "Назначаем..." : "Назначить цепочку"}</button>
+    <button disabled={submitting || !currentLeadId || !currentSequenceId} className="ui-button ui-button-primary">{submitting ? "Назначаем..." : "Назначить цепочку"}</button>
   </form>;
 }
 
-function WarmupForm({ sequenceId, onSubmit }: { sequenceId?: string; onSubmit: (action: CrmAction) => Promise<boolean> }) {
+function WarmupForm({ sequenceId, step, onSubmit }: { sequenceId?: string; step?: CrmState["warmupSequences"][number]["steps"][number]; onSubmit: (action: CrmAction) => Promise<boolean> }) {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
 
@@ -2567,17 +2833,26 @@ function WarmupForm({ sequenceId, onSubmit }: { sequenceId?: string; onSubmit: (
     try {
       const file = data.attachment instanceof File && data.attachment.size > 0 ? data.attachment : null;
       const uploaded = file ? await uploadMediaFile(file) : null;
-      await onSubmit({
-        type: "create_warmup_step",
+      const removeAttachment = data.removeAttachment === "on";
+      const common = {
+        sequenceId,
+        day: Number(data.day),
+        title: String(data.title),
+        message: String(data.message),
+        contentType: String(data.contentType) as CrmState["warmupSequences"][number]["steps"][number]["contentType"]
+      };
+      await onSubmit(step ? {
+        type: "update_warmup_step",
         payload: {
-          sequenceId,
-          day: Number(data.day),
-          title: String(data.title),
-          message: String(data.message),
-          attachmentUrl: uploaded?.url,
-          attachmentType: uploaded?.type,
-          attachmentName: uploaded?.name
+          ...common,
+          stepId: step.id,
+          attachmentUrl: uploaded?.url ?? (removeAttachment ? null : step.attachmentUrl),
+          attachmentType: uploaded?.type ?? (removeAttachment ? null : step.attachmentType),
+          attachmentName: uploaded?.name ?? (removeAttachment ? null : step.attachmentName)
         }
+      } : {
+        type: "create_warmup_step",
+        payload: { ...common, attachmentUrl: uploaded?.url, attachmentType: uploaded?.type, attachmentName: uploaded?.name }
       });
     } catch (uploadError) {
       setError(uploadError instanceof Error ? uploadError.message : "Не удалось сохранить вложение.");
@@ -2588,13 +2863,17 @@ function WarmupForm({ sequenceId, onSubmit }: { sequenceId?: string; onSubmit: (
 
   return (
     <form onSubmit={submit} className="grid gap-3">
-      <h2 className="pr-12 text-xl font-bold text-[#202939]">Новый шаг прогрева</h2>
-      <FormInput name="day" label="День" type="number" required />
-      <FormInput name="title" label="Название" required />
-      <FormInput name="message" label="Сообщение/цель" required />
+      <h2 className="pr-12 text-xl font-bold text-[#202939]">{step ? "Изменить шаг прогрева" : "Новый шаг прогрева"}</h2>
+      <FormInput name="day" label="День" type="number" min={0} max={3650} defaultValue={step?.day.toString() ?? ""} required />
+      <FormInput name="title" label="Название" defaultValue={step?.title ?? ""} required />
+      <label className="ui-label">Тип контента<select name="contentType" defaultValue={step?.contentType ?? "Custom"} className="ui-field">
+        <option value="VSL">VSL</option><option value="SEO audit">SEO audit</option><option value="Case">Кейс</option><option value="Competitor audit">Аудит конкурентов</option><option value="Custom">Другое</option>
+      </select></label>
+      <label className="ui-label">Сообщение или цель<textarea name="message" defaultValue={step?.message ?? ""} rows={5} maxLength={4000} required className="ui-field resize-y" /></label>
       <label className="ui-label">Фото или видео<input name="attachment" type="file" accept="image/jpeg,image/png,image/webp,image/gif,video/mp4,video/quicktime,video/webm" className="ui-field file:mr-3 file:border-0 file:bg-transparent file:font-semibold" /></label>
+      {step?.attachmentUrl && <label className="flex items-center gap-3 text-sm font-semibold text-slate-700"><input name="removeAttachment" type="checkbox" className="size-4 accent-[#536DFE]" /> Удалить текущее вложение</label>}
       {error && <p className="rounded-lg bg-rose-50 p-3 text-sm font-semibold text-rose-800">{error}</p>}
-      <button disabled={submitting} className="ui-button ui-button-primary">{submitting ? "Загружаем..." : "Добавить"}</button>
+      <button disabled={submitting} className="ui-button ui-button-primary">{submitting ? "Сохраняем..." : step ? "Сохранить шаг" : "Добавить шаг"}</button>
     </form>
   );
 }
@@ -2624,11 +2903,11 @@ function RefusalForm({ leadId, onSubmit }: { leadId: string; onSubmit: (action: 
   );
 }
 
-function FormInput({ name, label, type = "text", required = false, defaultValue = "", placeholder, minLength }: { name: string; label: string; type?: string; required?: boolean; defaultValue?: string; placeholder?: string; minLength?: number }) {
+function FormInput({ name, label, type = "text", required = false, defaultValue = "", placeholder, minLength, min, max, autoComplete }: { name: string; label: string; type?: string; required?: boolean; defaultValue?: string; placeholder?: string; minLength?: number; min?: number; max?: number; autoComplete?: string }) {
   return (
     <label className="ui-label">
       {label}
-      <input name={name} type={type} required={required} defaultValue={defaultValue} placeholder={placeholder} minLength={minLength} className="ui-field" />
+      <input name={name} type={type} required={required} defaultValue={defaultValue} placeholder={placeholder} minLength={minLength} min={min} max={max} autoComplete={autoComplete} className="ui-field" />
     </label>
   );
 }

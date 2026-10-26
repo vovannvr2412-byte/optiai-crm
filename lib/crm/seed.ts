@@ -43,6 +43,7 @@ export const seedIntegrations: Integration[] = [
   { id: "avito", name: "Avito", description: "Сообщения, заявки и звонки", status: "needs_setup" },
   { id: "sheets", name: "Google Sheets", description: "Экспорт и сверка данных", status: "needs_setup" },
   { id: "metrika", name: "Яндекс Метрика", description: "Посещения сайта и конверсии", status: "needs_setup" },
+  { id: "ai", name: "AI-ассистент", description: "Анализ звонков, автоматические ответы и персонализация прогревов", status: "needs_setup" },
   { id: "robokassa", name: "RoboKassa", description: "Оплаты подписок", status: "needs_setup" },
   { id: "sip", name: "SIP-телефония", description: "Звонки, записи, автодозвон", status: "needs_setup" }
 ];

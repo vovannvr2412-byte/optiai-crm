@@ -1,9 +1,12 @@
-import { NextResponse } from "next/server";
+import { after, NextResponse } from "next/server";
+import { processIncomingAiReply } from "@/lib/ai/messaging";
 import { telegramAdapter } from "@/lib/messaging/providers/telegram";
 import { archiveTelegramAttachments } from "@/lib/messaging/media-archive";
 import { listConnections } from "@/lib/messaging/store";
 import { saveIncomingMessageAndNotify } from "@/lib/messaging/incoming";
 import { getMessengerSecrets } from "@/lib/messaging/secrets";
+
+export const maxDuration = 120;
 
 export async function POST(request: Request) {
   const secrets = await getMessengerSecrets("telegram");
@@ -36,6 +39,7 @@ export async function POST(request: Request) {
         botExternalAccountId
       });
     }));
+    after(() => Promise.all(results.map(processIncomingAiReply)).then(() => undefined));
     return NextResponse.json({ ok: true, accepted: results.filter((item) => !item.duplicate).length });
   } catch {
     return NextResponse.json({ error: "Temporary processing error" }, { status: 503 });
