@@ -100,6 +100,23 @@ export function disableCredential(email: string) {
   persistCredentials();
 }
 
+export function renameCredential(userId: string, previousEmail: string, nextEmail: string) {
+  const store = credentials();
+  const previousKey = normalizeEmail(previousEmail);
+  const nextKey = normalizeEmail(nextEmail);
+  if (previousKey === nextKey) return;
+
+  const credential = store.get(previousKey);
+  if (!credential || credential.userId !== userId) {
+    throw new Error("Не найдены локальные данные входа руководителя.");
+  }
+  if (store.has(nextKey)) throw new Error("Аккаунт с таким email уже существует.");
+
+  store.delete(previousKey);
+  store.set(nextKey, { ...credential, email: nextKey });
+  persistCredentials();
+}
+
 export function verifyCredential(email: string, password: string) {
   const credential = credentials().get(normalizeEmail(email));
   if (!credential) return null;

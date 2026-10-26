@@ -145,3 +145,16 @@ export async function deleteSupabaseAuthUser(authUserId: string | null) {
 export async function getAuthUserIdForCrmUser(userId: string) {
   return authUserIdForCrmUser(userId);
 }
+
+export async function updateSupabaseAuthUserProfile(user: CrmUser) {
+  const authUserId = await authUserIdForCrmUser(user.id);
+  if (!authUserId) throw new Error("Аккаунт руководителя не связан с Supabase Auth.");
+
+  const { data, error } = await createServiceSupabaseClient().auth.admin.updateUserById(authUserId, {
+    email: user.email,
+    email_confirm: true,
+    ...userMetadata(user)
+  });
+  if (error) throw error;
+  return data.user;
+}

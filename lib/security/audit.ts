@@ -79,6 +79,8 @@ export function auditDescriptor(action: CrmAction) {
   switch (action.type) {
     case "create_user":
       return { action: "user.created", entityType: "crm_user", details: { email: action.payload.email, role: action.payload.role } };
+    case "update_owner_profile":
+      return { action: "user.profile_updated", entityType: "crm_user", entityId: action.payload.userId, details: { email: action.payload.email } };
     case "disable_user":
       return { action: "user.disabled", entityType: "crm_user", entityId: action.payload.userId };
     case "delete_user":

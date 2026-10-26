@@ -382,6 +382,20 @@ export function applyCrmAction(action: CrmAction): CrmState {
     state.users.unshift(newUser);
   }
 
+  if (action.type === "update_owner_profile") {
+    const user = state.users.find((item) => item.id === action.payload.userId && item.role === "Руководитель");
+    if (!user) throw new Error("Аккаунт руководителя не найден.");
+
+    const normalizedEmail = action.payload.email.trim().toLowerCase();
+    if (state.users.some((item) => item.id !== user.id && item.email.toLowerCase() === normalizedEmail)) {
+      throw new Error("Аккаунт с таким email уже существует.");
+    }
+
+    user.fullName = action.payload.fullName.trim();
+    user.email = normalizedEmail;
+    user.position = action.payload.position.trim();
+  }
+
   if (action.type === "disable_user") {
     const user = state.users.find((item) => item.id === action.payload.userId);
     const fallback = state.users.find((item) => item.role === user?.role && item.status === "active" && item.id !== user?.id)

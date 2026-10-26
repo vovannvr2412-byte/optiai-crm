@@ -62,6 +62,7 @@ const auditActionLabels: Record<string, string> = {
   "auth.password_changed": "Пароль изменен",
   "user.invited": "Сотрудник приглашен",
   "user.created": "Аккаунт сотрудника создан",
+  "user.profile_updated": "Данные руководителя изменены",
   "user.disabled": "Аккаунт отключен",
   "user.deleted": "Аккаунт удален",
   "task.completed": "Задача выполнена",
@@ -88,7 +89,7 @@ const auditActionLabels: Record<string, string> = {
   "ai.call_analyzed": "Звонок проанализирован AI"
 };
 
-type Modal = "newUser" | "newLead" | "editLead" | "deleteLead" | "warmupSequence" | "warmupStep" | "assignWarmup" | "refusal" | "integration" | "password" | "rescheduleTask" | "callResult" | null;
+type Modal = "newUser" | "ownerProfile" | "newLead" | "editLead" | "deleteLead" | "warmupSequence" | "warmupStep" | "assignWarmup" | "refusal" | "integration" | "password" | "rescheduleTask" | "callResult" | null;
 
 const navItems: { id: ViewId; icon: typeof LayoutDashboard }[] = [
   { id: "dashboard", icon: LayoutDashboard },
@@ -1297,6 +1298,11 @@ export function CrmApp() {
                       </div>
                       <div className="mt-3 flex flex-wrap gap-2">
                         <span className="rounded-md bg-[#EEF1FF] px-3 py-2 text-sm font-semibold text-[#4357D9]">Supabase Auth · персональный пароль</span>
+                        {currentUser.role === "Руководитель" && user.id === currentUser.id && (
+                          <button onClick={() => setModal("ownerProfile")} className="ui-button ui-button-secondary">
+                            <Pencil size={15} /> Изменить данные
+                          </button>
+                        )}
                         {currentUser.role === "Руководитель" && user.role !== "Руководитель" && (
                           <>
                             <button onClick={() => void runAction({ type: "disable_user", payload: { userId: user.id } }, "Аккаунт отключен, сделки переназначены.")} className="ui-button ui-button-secondary">Отключить</button>
@@ -1419,6 +1425,7 @@ export function CrmApp() {
           if (refreshAfterClose) void load();
         }}>
           {modal === "newUser" && <NewUserForm currentUser={currentUser} submitting={loadingAction} onSubmit={async (action) => { const ok = await runAction(action, "Аккаунт сотрудника создан. Передайте ему email и временный пароль."); if (ok) setModal(null); }} />}
+          {modal === "ownerProfile" && <OwnerProfileForm user={currentUser} submitting={loadingAction} onSubmit={async (action) => { const ok = await runAction(action, "Данные руководителя обновлены. Для следующего входа используйте новый email."); if (ok) setModal(null); }} />}
           {modal === "password" && <AccountPasswordForm onCancel={() => setModal(null)} onSuccess={() => { setBootstrap(null); setModal(null); }} />}
           {modal === "rescheduleTask" && state.tasks.find((task) => task.id === selectedTaskId) && (
             <RescheduleTaskForm
@@ -2034,6 +2041,35 @@ function NewUserForm({ currentUser, submitting, onSubmit }: { currentUser: CrmUs
       <FormInput name="position" label="Должность" required />
       {error && <div role="alert" className="rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">{error}</div>}
       <button disabled={submitting} className="ui-button ui-button-primary">{submitting ? "Создаём..." : "Создать аккаунт"}</button>
+    </form>
+  );
+}
+
+function OwnerProfileForm({ user, submitting, onSubmit }: { user: CrmUser; submitting: boolean; onSubmit: (action: CrmAction) => void | Promise<void> }) {
+  function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const data = Object.fromEntries(new FormData(event.currentTarget).entries()) as Record<string, string>;
+    void onSubmit({
+      type: "update_owner_profile",
+      payload: {
+        userId: user.id,
+        fullName: data.fullName,
+        email: data.email,
+        position: data.position
+      }
+    });
+  }
+
+  return (
+    <form onSubmit={submit} className="grid gap-3">
+      <div>
+        <h2 className="pr-12 text-xl font-bold text-[#202939]">Данные руководителя</h2>
+        <p className="mt-1 text-sm leading-5 text-slate-600">Email изменится одновременно в CRM и Supabase Auth. При следующем входе используйте новый адрес.</p>
+      </div>
+      <FormInput name="fullName" label="Имя и фамилия" defaultValue={user.fullName} autoComplete="name" required />
+      <FormInput name="email" label="Рабочий email" type="email" defaultValue={user.email} autoComplete="email" required />
+      <FormInput name="position" label="Должность" defaultValue={user.position} autoComplete="organization-title" required />
+      <button disabled={submitting} className="ui-button ui-button-primary">{submitting ? "Сохраняем..." : "Сохранить изменения"}</button>
     </form>
   );
 }

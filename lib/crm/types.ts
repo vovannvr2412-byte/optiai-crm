@@ -192,6 +192,7 @@ export type LeadUpdate = Partial<Omit<Lead, "id" | "status" | "score" | "tempera
 
 export type CrmAction =
   | { type: "create_user"; payload: Pick<CrmUser, "fullName" | "email" | "role" | "position"> & { password: string } }
+  | { type: "update_owner_profile"; payload: { userId: string } & Pick<CrmUser, "fullName" | "email" | "position"> }
   | { type: "disable_user"; payload: { userId: string } }
   | { type: "delete_user"; payload: { userId: string } }
   | { type: "complete_task"; payload: { taskId: string } }

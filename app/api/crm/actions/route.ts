@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getSessionUserId } from "@/lib/auth/session";
-import { banSupabaseAuthUser, createSupabaseAuthUser, deleteSupabaseAuthUser, getAuthUserIdForCrmUser } from "@/lib/auth/supabase-users";
+import { banSupabaseAuthUser, createSupabaseAuthUser, deleteSupabaseAuthUser, getAuthUserIdForCrmUser, updateSupabaseAuthUserProfile } from "@/lib/auth/supabase-users";
+import { renameCredential } from "@/lib/auth/credentials";
 import { applyCrmActionAsync, dashboardMetrics, getCrmStateAsync, scopedStateForAsync } from "@/lib/crm/store";
 import type { CrmAction, CrmUser } from "@/lib/crm/types";
 import { saveIntegrationSecrets } from "@/lib/integrations/secrets";
@@ -43,6 +44,12 @@ const createUserPayloadSchema = z.object({
     .max(128)
     .regex(/[a-zа-я]/i, "Добавьте в пароль буквы.")
     .regex(/\d/, "Добавьте в пароль цифру.")
+});
+const updateOwnerProfilePayloadSchema = z.object({
+  userId: z.string().min(1),
+  fullName: z.string().trim().min(2).max(120),
+  email: z.string().trim().email().max(254),
+  position: z.string().trim().min(2).max(120)
 });
 const configureIntegrationPayloadSchema = z.object({
   integrationId: z.string().min(1).max(80),
@@ -98,6 +105,16 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: result.error.issues[0]?.message ?? "Укажите корректные данные сотрудника" }, { status: 400 });
     }
   }
+  if (action.type === "update_owner_profile") {
+    const result = updateOwnerProfilePayloadSchema.safeParse(action.payload);
+    if (!result.success) {
+      return NextResponse.json({ error: result.error.issues[0]?.message ?? "Проверьте данные руководителя" }, { status: 400 });
+    }
+    const normalizedEmail = result.data.email.toLowerCase();
+    if (fullState.users.some((user) => user.id !== currentUser.id && user.email.toLowerCase() === normalizedEmail)) {
+      return NextResponse.json({ error: "Аккаунт с таким email уже существует" }, { status: 409 });
+    }
+  }
   if (action.type === "configure_integration" && !configureIntegrationPayloadSchema.safeParse(action.payload).success) {
     return NextResponse.json({ error: "Проверьте поля интеграции" }, { status: 400 });
   }
@@ -147,6 +164,9 @@ export async function POST(request: Request) {
 
   let state;
   let createdUser: CrmUser | undefined;
+  let previousOwnerProfile: CrmUser | undefined;
+  let ownerAuthUpdated = false;
+  let ownerCrmUpdated = false;
   try {
     const deletedAuthUserId = action.type === "delete_user" && supabaseAuthEnabled()
       ? await getAuthUserIdForCrmUser(action.payload.userId)
@@ -154,7 +174,23 @@ export async function POST(request: Request) {
     if (action.type === "configure_integration") {
       await saveIntegrationSecrets(action.payload.integrationId, action.payload.config);
     }
+    if (action.type === "update_owner_profile") {
+      previousOwnerProfile = { ...currentUser };
+      if (supabaseAuthEnabled()) {
+        await updateSupabaseAuthUserProfile({
+          ...currentUser,
+          fullName: action.payload.fullName.trim(),
+          email: action.payload.email.trim().toLowerCase(),
+          position: action.payload.position.trim()
+        });
+        ownerAuthUpdated = true;
+      }
+    }
     await applyCrmActionAsync(action);
+    if (action.type === "update_owner_profile") ownerCrmUpdated = true;
+    if (action.type === "update_owner_profile" && !supabaseAuthEnabled() && previousOwnerProfile) {
+      renameCredential(currentUser.id, previousOwnerProfile.email, action.payload.email);
+    }
     if (action.type === "start_warmup") {
       await assignWarmupSequence(action.payload.leadId, action.payload.sequenceId, currentUser.id);
     }
@@ -188,21 +224,30 @@ export async function POST(request: Request) {
       );
     }
   } catch (error) {
+    if (ownerAuthUpdated && !ownerCrmUpdated && previousOwnerProfile) {
+      await updateSupabaseAuthUserProfile(previousOwnerProfile).catch((rollbackError) => {
+        console.error("Owner Auth profile rollback failed", { rollbackError });
+      });
+    }
     const message = error instanceof Error ? error.message : String(error);
     console.error("CRM action failed", { actionType: action.type, message, error });
     return NextResponse.json({ error: `CRM не смогла сохранить действие: ${message}` }, { status: 500 });
   }
+  const responseCurrentUser = state.users.find((user) => user.id === currentUser.id) ?? currentUser;
   return NextResponse.json({
-    currentUser,
+    currentUser: responseCurrentUser,
     state,
     metrics: dashboardMetrics(state),
     notifications: await listNotificationsForUser(currentUser.id),
     automationStatus: await getAutomationStatus(),
-    auditLog: currentUser.role === "Руководитель" || currentUser.role === "РОП" ? await listSecurityAudit(30) : []
+    auditLog: responseCurrentUser.role === "Руководитель" || responseCurrentUser.role === "РОП" ? await listSecurityAudit(30) : []
   });
 }
 
 function canRunAction(user: CrmUser, action: CrmAction, state: Awaited<ReturnType<typeof getCrmStateAsync>>) {
+  if (action.type === "update_owner_profile") {
+    return user.role === "Руководитель" && action.payload.userId === user.id;
+  }
   if (action.type === "disable_user" || action.type === "delete_user") {
     const target = state.users.find((item) => item.id === action.payload.userId);
     return user.role === "Руководитель" && Boolean(target) && target?.role !== "Руководитель";
