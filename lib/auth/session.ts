@@ -56,8 +56,13 @@ export async function clearSession() {
   try {
     if (supabaseAuthEnabled()) {
       const supabase = await createServerAuthClient();
-      const { error } = await supabase.auth.signOut({ scope: "local" });
-      if (error) console.error("Supabase sign out failed", { message: error.message });
+      const result = await Promise.race([
+        supabase.auth.signOut({ scope: "local" }),
+        new Promise<{ error: Error }>((resolve) => {
+          setTimeout(() => resolve({ error: new Error("Supabase sign out timed out") }), 3000);
+        })
+      ]);
+      if (result.error) console.error("Supabase sign out failed", { message: result.error.message });
     }
   } catch (error) {
     console.error("Supabase sign out failed", {
@@ -65,7 +70,20 @@ export async function clearSession() {
     });
   } finally {
     const cookieStore = await cookies();
-    cookieStore.delete(SESSION_COOKIE);
+    const authCookieNames = cookieStore.getAll()
+      .map(({ name }) => name)
+      .filter((name) => name === SESSION_COOKIE || (name.startsWith("sb-") && name.includes("-auth-token")));
+
+    for (const name of new Set([SESSION_COOKIE, ...authCookieNames])) {
+      cookieStore.set(name, "", {
+        httpOnly: name === SESSION_COOKIE,
+        sameSite: "lax",
+        secure: process.env.AUTH_COOKIE_SECURE === "true",
+        path: "/",
+        expires: new Date(0),
+        maxAge: 0
+      });
+    }
   }
 }
 

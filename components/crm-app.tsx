@@ -356,7 +356,11 @@ export function CrmApp() {
     setLoggingOut(true);
     setNotificationsOpen(false);
     try {
-      const response = await fetch("/api/auth/logout", { method: "POST" });
+      const response = await fetch("/api/auth/logout", {
+        method: "POST",
+        cache: "no-store",
+        credentials: "same-origin"
+      });
       if (!response.ok) {
         const data = await readApiJsonOrNull<{ error?: string }>(response);
         throw new Error(data?.error ?? "Не удалось завершить сессию.");
@@ -364,6 +368,7 @@ export function CrmApp() {
       window.sessionStorage.removeItem("optiai:selectedLeadId");
       setBootstrap(null);
       setAuthChecked(true);
+      window.location.replace("/");
     } catch (error) {
       setToast(error instanceof Error ? error.message : "Не удалось выйти из аккаунта.");
       setLoggingOut(false);
