@@ -17,7 +17,7 @@ export async function hydrateLeadOperations(state: CrmState) {
   ]);
   const error = profiles.error ?? checks.error ?? events.error ?? documents.error;
   if (error) {
-    if (error.code === "42P01") return state;
+    if (error.code === "42P01" || error.code === "PGRST205") return state;
     throw error;
   }
   const profileByLead = new Map((profiles.data ?? []).map((row) => [String(row.lead_id), row]));

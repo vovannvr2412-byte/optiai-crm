@@ -12,7 +12,7 @@ export async function hydrateUserSettings(state: CrmState) {
   if (!enabled()) return state;
   const { data, error } = await createServiceSupabaseClient().from("os_user_settings").select("user_id, app_permissions, auto_assign_enabled");
   if (error) {
-    if (error.code === "42P01") return state;
+    if (error.code === "42P01" || error.code === "PGRST205") return state;
     throw error;
   }
   const byUser = new Map((data as SettingsRow[] | null ?? []).map((row) => [row.user_id, row]));
