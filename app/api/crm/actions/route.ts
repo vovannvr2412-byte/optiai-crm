@@ -3,7 +3,7 @@ import { z } from "zod";
 import { getSessionUserId } from "@/lib/auth/session";
 import { banSupabaseAuthUser, createSupabaseAuthUser, deleteSupabaseAuthUser, getAuthUserIdForCrmUser, updateSupabaseAuthUserProfile } from "@/lib/auth/supabase-users";
 import { renameCredential } from "@/lib/auth/credentials";
-import { applyCrmActionAsync, dashboardMetrics, getCrmStateAsync, scopedStateForAsync } from "@/lib/crm/store";
+import { applyCrmActionAsync, dashboardMetrics, getCrmStateAsync, salesPeriodMetrics, scopedStateForAsync } from "@/lib/crm/store";
 import type { CrmAction, CrmUser } from "@/lib/crm/types";
 import { saveIntegrationSecrets } from "@/lib/integrations/secrets";
 import { auditDescriptor, listSecurityAudit, recordSecurityAuditSafe } from "@/lib/security/audit";
@@ -21,14 +21,32 @@ const updateLeadPayloadSchema = z.object({
   leadId: z.string().min(1),
   changes: z.record(z.string(), z.unknown())
 });
+const updateLeadOperationsSchema = z.object({
+  leadId: z.string().min(1),
+  changes: z.object({
+    projectName: z.string().trim().max(200).optional(),
+    optiaiAccountId: z.string().trim().max(200).optional(),
+    optiaiLogin: z.string().trim().max(200).optional(),
+    preferredChannel: z.enum(["telegram", "max", "whatsapp", "phone", "email"]).optional(),
+    telegramId: z.string().trim().max(200).optional(),
+    maxContact: z.string().trim().max(200).optional(),
+    whatsappContact: z.string().trim().max(200).optional(),
+    substatus: z.enum(["Не отвечает", "Отложено"]).nullable().optional(),
+    expectedPaymentAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional()
+  })
+});
+const activationCheckSchema = z.object({ leadId: z.string().min(1), code: z.enum(["questionnaire_sent", "questionnaire_received", "integration_completed", "keywords_approved", "subscription_activated", "days_added"]), completed: z.boolean(), notApplicable: z.boolean().optional(), actorId: z.string().min(1) });
+const scriptsSentSchema = z.object({ leadId: z.string().min(1), completed: z.boolean(), actorId: z.string().min(1) });
 
 const deleteLeadPayloadSchema = z.object({ leadId: z.string().min(1) });
+const osAppSchema = z.enum(["leads", "management", "content", "routines", "settings", "team"]);
+const updateUserAccessSchema = z.object({ userId: z.string().min(1), appPermissions: z.array(osAppSchema).max(6), autoAssignEnabled: z.boolean() });
 const taskPayloadSchema = z.object({ taskId: z.string().min(1) });
 const rescheduleTaskPayloadSchema = taskPayloadSchema.extend({ dueAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) });
 const callResultPayloadSchema = z.object({
   leadId: z.string().min(1),
   ownerId: z.string().min(1),
-  result: z.enum(["answered", "no_answer", "meeting", "comment"]),
+  result: z.enum(["answered", "no_answer", "busy", "invalid_number", "other", "meeting", "comment"]),
   comment: z.string().trim().max(2000).optional()
 }).refine((value) => value.result !== "comment" || Boolean(value.comment), {
   message: "Для комментария нужен текст",
@@ -37,7 +55,7 @@ const callResultPayloadSchema = z.object({
 const createUserPayloadSchema = z.object({
   fullName: z.string().trim().min(2).max(120),
   email: z.string().email(),
-  role: z.enum(["Руководитель", "РОП", "Менеджер", "Аккаунт-менеджер"]),
+  role: z.enum(["Руководитель", "РОП", "Менеджер", "Аккаунт-менеджер", "Технический специалист"]),
   position: z.string().trim().min(2).max(120),
   password: z.string()
     .min(10, "Пароль должен содержать минимум 10 символов.")
@@ -115,11 +133,23 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Аккаунт с таким email уже существует" }, { status: 409 });
     }
   }
+  if (action.type === "update_user_access" && !updateUserAccessSchema.safeParse(action.payload).success) {
+    return NextResponse.json({ error: "Проверьте права сотрудника" }, { status: 400 });
+  }
   if (action.type === "configure_integration" && !configureIntegrationPayloadSchema.safeParse(action.payload).success) {
     return NextResponse.json({ error: "Проверьте поля интеграции" }, { status: 400 });
   }
   if (action.type === "update_lead" && !updateLeadPayloadSchema.safeParse(action.payload).success) {
     return NextResponse.json({ error: "Проверьте поля формы редактирования лида" }, { status: 400 });
+  }
+  if (action.type === "update_lead_operations" && !updateLeadOperationsSchema.safeParse(action.payload).success) {
+    return NextResponse.json({ error: "Проверьте данные проекта и аккаунта OptiAI" }, { status: 400 });
+  }
+  if (action.type === "set_activation_check" && (!activationCheckSchema.safeParse(action.payload).success || action.payload.actorId !== currentUser.id)) {
+    return NextResponse.json({ error: "Некорректный пункт подключения" }, { status: 400 });
+  }
+  if (action.type === "set_scripts_sent" && (!scriptsSentSchema.safeParse(action.payload).success || action.payload.actorId !== currentUser.id)) {
+    return NextResponse.json({ error: "Некорректный статус отправки скриптов" }, { status: 400 });
   }
   if (action.type === "delete_lead" && !deleteLeadPayloadSchema.safeParse(action.payload).success) {
     return NextResponse.json({ error: "Некорректный идентификатор лида" }, { status: 400 });
@@ -234,10 +264,22 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: `CRM не смогла сохранить действие: ${message}` }, { status: 500 });
   }
   const responseCurrentUser = state.users.find((user) => user.id === currentUser.id) ?? currentUser;
+  const refreshedFullState = await getCrmStateAsync();
+  const responseMetrics = dashboardMetrics(refreshedFullState);
+  if (responseCurrentUser.role === "Менеджер" || responseCurrentUser.role === "РОП" || responseCurrentUser.role === "Технический специалист") {
+    responseMetrics.paidRevenue = 0;
+    responseMetrics.mrr = 0;
+    responseMetrics.churn = 0;
+    responseMetrics.ltv = 0;
+    responseMetrics.averageLifetimeMonths = 0;
+    responseMetrics.channels = responseMetrics.channels.map((channel) => ({ ...channel, revenue: 0 }));
+    responseMetrics.managers = [];
+  }
   return NextResponse.json({
     currentUser: responseCurrentUser,
     state,
-    metrics: dashboardMetrics(state),
+    metrics: responseMetrics,
+    salesMetrics: salesPeriodMetrics(refreshedFullState, responseCurrentUser),
     notifications: await listNotificationsForUser(currentUser.id),
     automationStatus: await getAutomationStatus(),
     auditLog: responseCurrentUser.role === "Руководитель" || responseCurrentUser.role === "РОП" ? await listSecurityAudit(30) : []
@@ -245,6 +287,11 @@ export async function POST(request: Request) {
 }
 
 function canRunAction(user: CrmUser, action: CrmAction, state: Awaited<ReturnType<typeof getCrmStateAsync>>) {
+  if (action.type === "import_sip_call" || action.type === "connect_lead") return false;
+  if (action.type === "update_user_access") {
+    const target = state.users.find((item) => item.id === action.payload.userId);
+    return user.role === "Руководитель" && Boolean(target) && target?.role !== "Руководитель";
+  }
   if (action.type === "update_owner_profile") {
     return user.role === "Руководитель" && action.payload.userId === user.id;
   }
@@ -265,6 +312,7 @@ function canRunAction(user: CrmUser, action: CrmAction, state: Awaited<ReturnTyp
     || action.type === "delete_warmup_step"
   ) return user.role === "РОП";
   if (user.role === "РОП") return action.type !== "toggle_integration" && action.type !== "configure_integration";
+  if (user.role === "Технический специалист" && (action.type === "toggle_integration" || action.type === "configure_integration")) return true;
   if (action.type === "assign_lead" || action.type === "toggle_integration" || action.type === "configure_integration" || action.type === "run_automation") {
     return false;
   }
@@ -292,6 +340,9 @@ function canRunAction(user: CrmUser, action: CrmAction, state: Awaited<ReturnTyp
 function leadIdFromAction(action: CrmAction, state: Awaited<ReturnType<typeof getCrmStateAsync>>) {
   if (
     action.type === "update_lead"
+    || action.type === "update_lead_operations"
+    || action.type === "set_activation_check"
+    || action.type === "set_scripts_sent"
     || action.type === "delete_lead"
     || action.type === "move_stage"
     || action.type === "record_call"

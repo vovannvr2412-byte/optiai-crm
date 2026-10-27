@@ -240,6 +240,10 @@ async function runWarmupSteps(stats: SchedulerStats) {
       await supabase.from("warmup_assignments").update({ status: "completed", completed_at: new Date().toISOString() }).eq("id", assignment.id);
       continue;
     }
+    if (lead.stage !== 1) {
+      await supabase.from("warmup_assignments").update({ status: "paused" }).eq("id", assignment.id);
+      continue;
+    }
     const keys = sequence.steps.map((step) => `warmup:${assignment.id}:${step.id}`);
     const { data: completedRows, error: completedError } = await supabase
       .from("automation_events")
@@ -268,6 +272,14 @@ async function runWarmupSteps(stats: SchedulerStats) {
       userId: lead.ownerId,
       payload: { assignmentId: assignment.id, sequenceId: sequence.id, stepId: dueStep.id, day: dueStep.day }
     }, stats, async () => {
+      const { data: overriddenTask, error: overrideError } = await supabase.from("tasks")
+        .select("manual_override")
+        .eq("lead_id", lead.id)
+        .eq("automation_key", `warmup:${sequence.id}:${dueStep.id}`)
+        .eq("status", "open")
+        .maybeSingle();
+      if (overrideError && overrideError.code !== "42703") throw overrideError;
+      if (overriddenTask?.manual_override) return;
       const attachment = warmupAttachment(dueStep);
       const conversation = (await listConversationsForUser(lead.ownerId)).find((item) => item.leadId === lead.id);
       if (!conversation) throw new Error("У лида нет привязанного чата в центре сообщений.");

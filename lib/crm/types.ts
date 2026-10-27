@@ -1,13 +1,15 @@
-export type Role = "Руководитель" | "РОП" | "Менеджер" | "Аккаунт-менеджер";
+export type Role = "Руководитель" | "РОП" | "Менеджер" | "Аккаунт-менеджер" | "Технический специалист";
+export type OsAppId = "leads" | "management" | "content" | "routines" | "settings" | "team";
 export type UserStatus = "active" | "disabled";
 export type LeadTemperature = "hot" | "warm" | "cold";
 export type LeadStatus = "sales" | "warmup" | "client" | "lost";
 export type IntegrationStatus = "connected" | "needs_setup" | "error";
 export type TaskPriority = "high" | "medium" | "low";
-export type ManualCallResult = "answered" | "no_answer" | "meeting" | "comment";
+export type ManualCallResult = "answered" | "no_answer" | "busy" | "invalid_number" | "other" | "meeting" | "comment";
 
 export type ViewId =
   | "dashboard"
+  | "management"
   | "tasks"
   | "pipeline"
   | "messengers"
@@ -30,6 +32,8 @@ export type CrmUser = {
   revenue: number;
   conversion: number;
   createdAt: string;
+  appPermissions?: OsAppId[];
+  autoAssignEnabled?: boolean;
 };
 
 export type Tariff = {
@@ -74,7 +78,25 @@ export type Lead = {
   lastContactAt?: string;
   createdAt: string;
   tariffId?: string;
+  projectName?: string;
+  optiaiAccountId?: string;
+  optiaiLogin?: string;
+  preferredChannel?: "telegram" | "max" | "whatsapp" | "phone" | "email";
+  telegramId?: string;
+  maxContact?: string;
+  whatsappContact?: string;
+  substatus?: "Не отвечает" | "Отложено";
+  expectedPaymentAt?: string;
+  originalOwnerId?: string;
+  scriptsSent?: boolean;
+  scriptsSentAt?: string;
+  sourceHistory?: LeadSourceEvent[];
+  activationChecks?: LeadActivationCheck[];
 };
+
+export type LeadSourceEvent = { id: string; source: string; eventType: string; occurredAt: string };
+export type LeadActivationCheckCode = "questionnaire_sent" | "questionnaire_received" | "integration_completed" | "keywords_approved" | "subscription_activated" | "days_added";
+export type LeadActivationCheck = { code: LeadActivationCheckCode; completedAt?: string; completedBy?: string; notApplicable?: boolean };
 
 export type Subscription = {
   id: string;
@@ -85,6 +107,8 @@ export type Subscription = {
   nextPaymentAt: string;
   contractMonths: number;
   status: "active" | "pending_payment" | "cancelled";
+  externalId?: string;
+  customPrice?: number;
 };
 
 export type Payment = {
@@ -94,6 +118,21 @@ export type Payment = {
   paidAt: string;
   provider: "RoboKassa" | "manual";
   status: "paid" | "pending" | "failed";
+  externalEventId?: string;
+  isFirstPayment?: boolean;
+};
+
+export type ClientDocument = {
+  id: string;
+  leadId: string;
+  externalId?: string;
+  kind: "invoice" | "act" | "contract" | "other";
+  title: string;
+  status: string;
+  fileUrl?: string;
+  amount?: number;
+  createdAt: string;
+  updatedAt: string;
 };
 
 export type CrmTask = {
@@ -105,6 +144,13 @@ export type CrmTask = {
   priority: TaskPriority;
   status: "open" | "done" | "cancelled";
   automationKey?: string;
+  dueTime?: string;
+  taskType?: "call" | "message" | "audit" | "case" | "proposal" | "other";
+  description?: string;
+  result?: string;
+  manualOverride?: boolean;
+  source?: "manual" | "warmup" | "automation" | "platform";
+  history?: { at: string; action: string; detail?: string }[];
 };
 
 export type Activity = {
@@ -129,6 +175,9 @@ export type CallRecord = {
   dealProbability: number;
   managerMistakes: string[];
   createdAt: string;
+  callResult?: "answered" | "no_answer" | "busy" | "invalid_number" | "other";
+  durationSeconds?: number;
+  externalId?: string;
 };
 
 export type WarmupStep = {
@@ -170,6 +219,7 @@ export type CrmState = {
   callRecords: CallRecord[];
   warmupSequences: WarmupSequence[];
   integrations: Integration[];
+  clientDocuments?: ClientDocument[];
 };
 
 export type DashboardMetrics = {
@@ -188,6 +238,12 @@ export type DashboardMetrics = {
   managers: { userId: string; calls: number; meetings: number; deals: number; revenue: number; conversion: number }[];
 };
 
+export type SalesPeriodMetrics = Record<"today" | "week" | "month", {
+  leads: number;
+  actualContacts: number;
+  firstPaidDeals: number;
+}>;
+
 export type LeadUpdate = Partial<Omit<Lead, "id" | "status" | "score" | "temperature" | "createdAt">>;
 
 export type CrmAction =
@@ -195,17 +251,23 @@ export type CrmAction =
   | { type: "update_owner_profile"; payload: { userId: string } & Pick<CrmUser, "fullName" | "email" | "position"> }
   | { type: "disable_user"; payload: { userId: string } }
   | { type: "delete_user"; payload: { userId: string } }
+  | { type: "update_user_access"; payload: { userId: string; appPermissions: OsAppId[]; autoAssignEnabled: boolean } }
   | { type: "complete_task"; payload: { taskId: string } }
   | { type: "reschedule_task"; payload: { taskId: string; dueAt: string } }
   | { type: "cancel_task"; payload: { taskId: string } }
   | { type: "create_lead"; payload: Omit<Lead, "id" | "stage" | "status" | "score" | "temperature" | "createdAt"> }
   | { type: "update_lead"; payload: { leadId: string; changes: LeadUpdate } }
+  | { type: "update_lead_operations"; payload: { leadId: string; changes: { projectName?: string; optiaiAccountId?: string; optiaiLogin?: string; preferredChannel?: Lead["preferredChannel"]; telegramId?: string; maxContact?: string; whatsappContact?: string; substatus?: Lead["substatus"] | null; expectedPaymentAt?: string | null } } }
+  | { type: "set_activation_check"; payload: { leadId: string; code: LeadActivationCheckCode; completed: boolean; notApplicable?: boolean; actorId: string } }
+  | { type: "set_scripts_sent"; payload: { leadId: string; completed: boolean; actorId: string } }
   | { type: "delete_lead"; payload: { leadId: string } }
   | { type: "move_stage"; payload: { leadId: string; stage: number } }
   | { type: "assign_lead"; payload: { leadId: string; ownerId: string } }
   | { type: "record_call"; payload: { leadId: string; ownerId: string } }
   | { type: "mark_no_answer"; payload: { leadId: string; ownerId: string } }
   | { type: "record_call_result"; payload: { leadId: string; ownerId: string; result: ManualCallResult; comment?: string } }
+  | { type: "import_sip_call"; payload: { externalId: string; leadId: string; ownerId: string; result: Exclude<ManualCallResult, "meeting" | "comment">; durationSeconds: number; recordingUrl?: string } }
+  | { type: "connect_lead"; payload: { leadId: string } }
   | { type: "send_message"; payload: { leadId: string; channel: string; text: string } }
   | { type: "start_warmup"; payload: { leadId: string; sequenceId: string } }
   | { type: "create_warmup_sequence"; payload: { name: string; description: string; active: boolean } }
@@ -223,29 +285,25 @@ export type CrmAction =
 
 export const STAGES = [
   "Новый лид",
-  "Контакт найден",
-  "Первый звонок",
-  "Не дозвонились",
-  "Разговор состоялся",
-  "Отправлен аудит",
   "Прогрев",
-  "Сделка или отказ",
-  "Оплата",
-  "Подключен",
-  "Продление",
-  "Апселл",
+  "Планирует оплату",
+  "Оплата и подключение",
+  "Подключён",
+  "Не продлил подписку",
   "Отказ"
 ] as const;
 
 export const ROLE_PERMISSIONS: Record<Role, ViewId[]> = {
-  Руководитель: ["dashboard", "tasks", "pipeline", "messengers", "lead", "callcenter", "warmup", "subscriptions", "team", "automations"],
-  РОП: ["dashboard", "tasks", "pipeline", "messengers", "lead", "callcenter", "warmup", "subscriptions", "team"],
-  Менеджер: ["tasks", "pipeline", "messengers", "lead", "callcenter", "warmup"],
-  "Аккаунт-менеджер": ["dashboard", "tasks", "messengers", "lead", "callcenter", "subscriptions"]
+  Руководитель: ["dashboard", "management", "tasks", "pipeline", "messengers", "lead", "callcenter", "warmup", "subscriptions", "team", "automations"],
+  РОП: ["dashboard", "tasks", "pipeline", "messengers", "lead", "callcenter", "warmup", "team"],
+  Менеджер: ["dashboard", "tasks", "pipeline", "messengers", "lead", "callcenter", "warmup"],
+  "Аккаунт-менеджер": ["dashboard", "management", "tasks", "messengers", "lead", "callcenter", "subscriptions"],
+  "Технический специалист": ["dashboard", "tasks", "pipeline", "lead", "callcenter", "automations"]
 };
 
 export const VIEW_TITLES: Record<ViewId, string> = {
   dashboard: "Дашборд",
+  management: "Обзор компании",
   tasks: "Задачи",
   pipeline: "Воронка",
   messengers: "Мессенджеры",

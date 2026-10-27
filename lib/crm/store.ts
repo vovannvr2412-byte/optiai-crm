@@ -3,17 +3,20 @@ import { disableCredential, getCredentialsSnapshot, hydrateCredentialsSnapshot }
 import { createServiceSupabaseClient } from "@/lib/supabase/server";
 import { ensureNormalizedCrmState, writeNormalizedCrmState } from "./normalized-store";
 import { migrateLegacyIntegrationSecrets } from "@/lib/integrations/secrets";
-import { STAGES, type CrmAction, type CrmState, type DashboardMetrics, type Lead, type LeadTemperature, type LeadUpdate, type ManualCallResult } from "./types";
+import { STAGES, type CrmAction, type CrmState, type CrmUser, type DashboardMetrics, type Lead, type LeadTemperature, type LeadUpdate, type ManualCallResult, type SalesPeriodMetrics } from "./types";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { hydrateUserSettings, saveUserSettings } from "@/lib/os/user-settings";
+import { hydrateLeadOperations, saveActivationCheck, saveLeadOperations } from "./operations-store";
 
 const globalForCrm = globalThis as unknown as { optiCrmState?: CrmState };
 const dataDir = process.env.CRM_DATA_DIR || path.join(process.cwd(), "data");
 const stateFile = path.join(dataDir, "crm-state.json");
 const tempStateFile = path.join(dataDir, "crm-state.tmp.json");
-const retiredSeedUserIds = new Set(["u-anna", "u-sofia", "u-ilya"]);
-const retiredSeedUserEmails = ["anna@optiai.ru", "sofia@optiai.ru", "ilya@optiai.ru"];
+const retiredSeedUserIds = new Set(["u-anna", "u-sofia", "u-ilya", "u-rop"]);
+const retiredSeedUserEmails = ["anna@optiai.ru", "sofia@optiai.ru", "ilya@optiai.ru", "rop@optiai.ru"];
+const activationCheckCodes = ["questionnaire_sent", "questionnaire_received", "integration_completed", "keywords_approved", "subscription_activated", "days_added"] as const;
 const credentialsKey = "credentials";
 let suppressLocalPersistence = false;
 
@@ -63,6 +66,21 @@ function persistState(state: CrmState) {
 
 function migrateState(state: CrmState) {
   let changed = false;
+  if (!state.integrations.some((integration) => integration.id === "optiai")) {
+    state.integrations.push({ id: "optiai", name: "Платформа OptiAI", description: "Регистрации, проекты, оплаты и подписки через API/webhook", status: "needs_setup" });
+    changed = true;
+  }
+  if (state.leads.some((lead) => lead.stage > 6)) {
+    state.leads.forEach((lead) => {
+      lead.stage = lead.stage === 0 ? 0
+        : lead.stage <= 6 ? 1
+          : lead.stage === 7 ? 2
+            : lead.stage === 8 ? 3
+              : lead.stage <= 11 ? 4 : 6;
+      lead.status = leadStatusForStage(lead.stage);
+    });
+    changed = true;
+  }
   if (!state.integrations.some((integration) => integration.id === "ai")) {
     state.integrations.push({ id: "ai", name: "AI-ассистент", description: "Анализ звонков, автоматические ответы и персонализация прогревов", status: "needs_setup" });
     changed = true;
@@ -151,6 +169,8 @@ export async function getCrmStateAsync(): Promise<CrmState> {
   const storedState = await ensureNormalizedCrmState(createSeedState());
   if (!isCrmState(storedState)) throw new Error("Supabase вернул некорректное состояние CRM.");
   const migrated = migrateState(storedState);
+  await hydrateUserSettings(migrated.state);
+  await hydrateLeadOperations(migrated.state);
   if (await migrateLegacyIntegrationSecrets(migrated.state.integrations)) migrated.changed = true;
   globalForCrm.optiCrmState = migrated.state;
   if (migrated.changed) {
@@ -216,10 +236,13 @@ export async function scopedStateForAsync(userId: string): Promise<CrmState> {
 
 function scopeState(state: CrmState, userId: string): CrmState {
   const user = state.users.find((item) => item.id === userId);
-  if (!user || user.role === "Руководитель" || user.role === "РОП") return state;
-  if (user.role === "Менеджер") {
-    const allowedLeadIds = new Set(state.leads.filter((lead) => lead.ownerId === user.id).map((lead) => lead.id));
-    return filterStateByLeads(state, allowedLeadIds, user.id);
+  if (!user || user.role === "Руководитель") return state;
+  if (user.role === "Менеджер" || user.role === "РОП" || user.role === "Технический специалист") {
+    return {
+      ...state,
+      payments: [],
+      tariffs: state.tariffs.map((tariff) => ({ ...tariff, price: 0 }))
+    };
   }
   const allowedLeadIds = new Set(state.leads.filter((lead) => lead.ownerId === user.id && lead.status === "client").map((lead) => lead.id));
   return filterStateByLeads(state, allowedLeadIds, user.id);
@@ -243,7 +266,7 @@ function addActivity(state: CrmState, leadId: string, type: CrmState["activities
 }
 
 function addTask(state: CrmState, leadId: string, ownerId: string, title: string, daysFromNow: number, priority: "high" | "medium" | "low", automationKey?: string) {
-  state.tasks.unshift({ id: id(), leadId, ownerId, title, dueAt: dateOnly(daysFromNow), priority, status: "open", automationKey });
+  state.tasks.unshift({ id: id(), leadId, ownerId, title, dueAt: dateOnly(daysFromNow), priority, status: "open", automationKey, taskType: title.toLocaleLowerCase("ru").includes("звон") ? "call" : "other", description: title, manualOverride: false, source: automationKey ? automationKey.startsWith("warmup:") ? "warmup" : "automation" : "manual", history: [{ at: today(), action: "created" }] });
 }
 
 function scheduleNoAnswerFollowUps(state: CrmState, lead: Lead, ownerId: string) {
@@ -274,25 +297,34 @@ function recordManualCallResult(
     return;
   }
 
-  caller.calls += 1;
   lead.lastContactAt = today();
 
-  if (payload.result === "no_answer") {
-    lead.stage = 3;
-    lead.status = "sales";
+  if (payload.result === "no_answer" || payload.result === "busy") {
+    lead.stage = 1;
+    lead.status = "warmup";
     lead.nextStep = "Перезвонить по плану 1/3/7 дней";
     addActivity(
       state,
       lead.id,
       "call",
-      "Не дозвонились",
+      payload.result === "busy" ? "Занято" : "Не дозвонились",
       comment || "CRM поставила ответственному задачи на повторный звонок через 1, 3 и 7 дней."
     );
     scheduleNoAnswerFollowUps(state, lead, lead.ownerId);
     return;
   }
 
-  lead.stage = Math.max(lead.stage, 4);
+  if (payload.result === "invalid_number" || payload.result === "other") {
+    lead.stage = 1;
+    lead.status = "warmup";
+    lead.nextStep = payload.result === "invalid_number" ? "Проверить контактный номер" : "Назначить следующее действие";
+    addActivity(state, lead.id, "call", payload.result === "invalid_number" ? "Неверный номер" : "Другой результат звонка", comment || lead.nextStep);
+    addTask(state, lead.id, lead.ownerId, lead.nextStep, 0, "high");
+    return;
+  }
+
+  caller.calls += 1;
+  lead.stage = Math.max(lead.stage, 1);
   lead.status = leadStatusForStage(lead.stage);
   lead.score = Math.min(100, scoreLead(lead) + 10);
   lead.temperature = temperature(lead.score);
@@ -320,9 +352,9 @@ function dateLabelForTaskDate(value: string) {
 }
 
 function leadStatusForStage(stage: number): Lead["status"] {
-  if (stage === 12) return "lost";
-  if (stage >= 9) return "client";
-  if (stage >= 6) return "warmup";
+  if (stage === 6) return "lost";
+  if (stage === 4) return "client";
+  if (stage === 1) return "warmup";
   return "sales";
 }
 
@@ -342,10 +374,12 @@ export function applyCrmAction(action: CrmAction): CrmState {
     const lead = state.leads.find((item) => item.id === task.leadId);
     if (action.type === "complete_task") {
       task.status = "done";
+      task.history = [...(task.history ?? []), { at: today(), action: "completed" }];
       if (lead) addActivity(state, lead.id, "task", "Задача выполнена", task.title);
     }
     if (action.type === "cancel_task") {
       task.status = "cancelled";
+      task.history = [...(task.history ?? []), { at: today(), action: "cancelled" }];
       if (lead) addActivity(state, lead.id, "task", "Задача отменена", task.title);
     }
     if (action.type === "reschedule_task") {
@@ -356,8 +390,51 @@ export function applyCrmAction(action: CrmAction): CrmState {
       if (dueAt < dateOnly()) throw new Error("Задачу нельзя перенести в прошлое.");
       task.dueAt = dueAt;
       task.status = "open";
+      task.manualOverride = true;
+      task.source = "manual";
+      task.history = [...(task.history ?? []), { at: today(), action: "rescheduled", detail: dueAt }];
       if (lead) addActivity(state, lead.id, "task", "Задача перенесена", `${task.title}: ${dateLabelForTaskDate(dueAt)}.`);
     }
+  }
+
+  if (action.type === "update_user_access") {
+    const user = state.users.find((item) => item.id === action.payload.userId);
+    if (!user) throw new Error("Сотрудник не найден.");
+    user.appPermissions = [...new Set(action.payload.appPermissions)];
+    user.autoAssignEnabled = action.payload.autoAssignEnabled;
+  }
+
+  if (action.type === "update_lead_operations") {
+    const lead = state.leads.find((item) => item.id === action.payload.leadId);
+    if (!lead) throw new Error("Лид не найден.");
+    Object.entries(action.payload.changes).forEach(([key, value]) => {
+      (lead as unknown as Record<string, unknown>)[key] = value ?? undefined;
+    });
+    addActivity(state, lead.id, "system", "Операционная карточка обновлена", "Обновлены данные проекта и аккаунта OptiAI.");
+  }
+
+  if (action.type === "set_activation_check") {
+    const lead = state.leads.find((item) => item.id === action.payload.leadId);
+    if (!lead) throw new Error("Лид не найден.");
+    const checks = lead.activationChecks ?? [];
+    const existing = checks.find((item) => item.code === action.payload.code);
+    if (existing) {
+      existing.completedAt = action.payload.completed ? today() : undefined;
+      existing.completedBy = action.payload.completed ? action.payload.actorId : undefined;
+      existing.notApplicable = Boolean(action.payload.notApplicable);
+    } else {
+      checks.push({ code: action.payload.code, completedAt: action.payload.completed ? today() : undefined, completedBy: action.payload.completed ? action.payload.actorId : undefined, notApplicable: Boolean(action.payload.notApplicable) });
+    }
+    lead.activationChecks = checks;
+    addActivity(state, lead.id, "system", action.payload.completed ? "Пункт подключения выполнен" : "Пункт подключения возвращён в работу", action.payload.code);
+  }
+
+  if (action.type === "set_scripts_sent") {
+    const lead = state.leads.find((item) => item.id === action.payload.leadId);
+    if (!lead) throw new Error("Лид не найден.");
+    lead.scriptsSent = action.payload.completed;
+    lead.scriptsSentAt = action.payload.completed ? today() : undefined;
+    addActivity(state, lead.id, "system", action.payload.completed ? "Скрипты отправлены" : "Отправка скриптов отменена", "Статус зафиксирован в карточке клиента.");
   }
 
   if (action.type === "create_user") {
@@ -435,7 +512,19 @@ export function applyCrmAction(action: CrmAction): CrmState {
   }
 
   if (action.type === "create_lead") {
+    const comparable = (value?: string) => (value ?? "").trim().toLocaleLowerCase("ru");
+    const phoneDigits = (value?: string) => (value ?? "").replace(/\D/g, "");
+    const duplicate = state.leads.find((lead) =>
+      (phoneDigits(action.payload.phone).length >= 7 && phoneDigits(lead.phone) === phoneDigits(action.payload.phone))
+      || (comparable(action.payload.email) && comparable(action.payload.email) !== "уточнить" && comparable(lead.email) === comparable(action.payload.email))
+      || (comparable(action.payload.telegram) && comparable(action.payload.telegram) !== "уточнить" && comparable(lead.telegram) === comparable(action.payload.telegram))
+    );
+    if (duplicate) throw new Error(`Лид уже существует: ${duplicate.companyName}. Откройте существующую карточку.`);
+    const autoOwners = state.users
+      .filter((user) => user.status === "active" && (user.role === "Менеджер" || user.role === "РОП") && user.autoAssignEnabled)
+      .sort((left, right) => state.leads.filter((lead) => lead.ownerId === left.id).length - state.leads.filter((lead) => lead.ownerId === right.id).length || left.createdAt.localeCompare(right.createdAt));
     const fallbackOwner = state.users.find((user) => user.status === "active" && user.id === action.payload.ownerId)
+      ?? autoOwners[0]
       ?? state.users.find((user) => user.status === "active" && user.role === "Менеджер")
       ?? state.users.find((user) => user.status === "active" && user.role === "РОП")
       ?? state.users.find((user) => user.status === "active" && user.role === "Руководитель");
@@ -450,6 +539,7 @@ export function applyCrmAction(action: CrmAction): CrmState {
       temperature: "cold",
       createdAt: today()
     };
+    lead.originalOwnerId = fallbackOwner.id;
     lead.score = scoreLead(lead);
     lead.temperature = temperature(lead.score);
     state.leads.unshift(lead);
@@ -481,7 +571,7 @@ export function applyCrmAction(action: CrmAction): CrmState {
     if (!nextCompanyName || !nextContactName || !nextPhone) {
       throw new Error("Укажите компанию, контактное лицо и телефон.");
     }
-    if (nextStage === 12 && !nextRefusalReason?.trim()) throw new Error("Для этапа «Отказ» укажите причину отказа.");
+    if (nextStage === 6 && !nextRefusalReason?.trim()) throw new Error("Для этапа «Отказ» укажите причину отказа.");
 
     Object.assign(lead, changes, {
       stage: nextStage,
@@ -511,17 +601,37 @@ export function applyCrmAction(action: CrmAction): CrmState {
     if (lead) {
       const nextStage = Math.trunc(action.payload.stage);
       if (nextStage < 0 || nextStage >= STAGES.length) throw new Error("Некорректный этап воронки.");
-      if (nextStage === 12 && !lead.refusalReason?.trim()) throw new Error("Переведите лида в отказ через действие с указанием причины.");
+      if (nextStage === 6 && !lead.refusalReason?.trim()) throw new Error("Переведите лида в отказ через действие с указанием причины.");
+      if (nextStage === 4) {
+        const paid = state.payments.some((payment) => payment.leadId === lead.id && payment.status === "paid");
+        const completedChecks = new Set((lead.activationChecks ?? []).filter((check) => Boolean(check.completedAt) || check.notApplicable).map((check) => check.code));
+        if (!paid) throw new Error("Подключение нельзя завершить без подтверждённой оплаты.");
+        if (!activationCheckCodes.every((code) => completedChecks.has(code))) throw new Error("Завершите все пункты подключения или отметьте неприменимые.");
+      }
       lead.stage = nextStage;
       lead.status = leadStatusForStage(lead.stage);
       lead.score = scoreLead(lead);
       lead.temperature = temperature(lead.score);
       lead.lastContactAt = today();
       addActivity(state, lead.id, "stage", "Этап изменен", STAGES[lead.stage]);
-      if (lead.stage === 3) {
-        scheduleNoAnswerFollowUps(state, lead, lead.ownerId);
+      if (lead.stage === 5) {
+        const originalOwner = state.users.find((user) => user.id === (lead.originalOwnerId ?? lead.ownerId) && user.status === "active");
+        const renewalOwner = originalOwner ?? state.users.find((user) => user.role === "Руководитель" && user.status === "active");
+        if (renewalOwner) {
+          lead.ownerId = renewalOwner.id;
+          addTask(state, lead.id, renewalOwner.id, "Срочно связаться: клиент не продлил подписку", 0, "high", `renewal:${lead.id}`);
+        }
       }
     }
+  }
+
+  if (action.type === "connect_lead") {
+    const lead = state.leads.find((item) => item.id === action.payload.leadId);
+    if (!lead) throw new Error("Лид не найден.");
+    lead.stage = 4;
+    lead.status = "client";
+    lead.lastContactAt = today();
+    addActivity(state, lead.id, "stage", "Подключение подтверждено платформой", STAGES[4]);
   }
 
   if (action.type === "assign_lead") {
@@ -546,6 +656,13 @@ export function applyCrmAction(action: CrmAction): CrmState {
     recordManualCallResult(state, action.payload);
   }
 
+  if (action.type === "import_sip_call") {
+    if (!state.callRecords.some((call) => call.externalId === action.payload.externalId)) {
+      recordManualCallResult(state, { leadId: action.payload.leadId, ownerId: action.payload.ownerId, result: action.payload.result, comment: `SIP · ${action.payload.durationSeconds} сек.` });
+      state.callRecords.unshift({ id: id(), leadId: action.payload.leadId, ownerId: action.payload.ownerId, recordingUrl: action.payload.recordingUrl ?? "", transcript: "", summary: "", objections: [], nextSteps: [], interest: 0, dealProbability: 0, managerMistakes: [], createdAt: today(), callResult: action.payload.result, durationSeconds: action.payload.durationSeconds, externalId: action.payload.externalId });
+    }
+  }
+
   if (action.type === "send_message") {
     const lead = state.leads.find((item) => item.id === action.payload.leadId);
     if (lead) {
@@ -561,7 +678,7 @@ export function applyCrmAction(action: CrmAction): CrmState {
     if (!sequence) throw new Error("Цепочка прогрева не найдена.");
     if (!sequence.active) throw new Error("Сначала включите выбранную цепочку прогрева.");
     if (lead && sequence) {
-      lead.stage = Math.max(lead.stage, 6);
+      lead.stage = 1;
       lead.status = "warmup";
       addActivity(state, lead.id, "warmup", "Прогрев запущен", sequence.name);
       state.tasks = state.tasks.filter((task) => !(task.leadId === lead.id && task.automationKey?.startsWith("warmup:") && task.status === "open"));
@@ -652,10 +769,12 @@ export function applyCrmAction(action: CrmAction): CrmState {
     const lead = state.leads.find((item) => item.id === action.payload.leadId);
     const tariff = state.tariffs.find((item) => item.id === action.payload.tariffId);
     if (lead && tariff) {
-      lead.stage = 9;
-      lead.status = "client";
+      lead.stage = 3;
+      lead.status = "sales";
       lead.tariffId = tariff.id;
-      state.payments.unshift({ id: id(), leadId: lead.id, amount: tariff.price, paidAt: dateOnly(), provider: "manual", status: "paid" });
+      if (!state.payments.some((payment) => payment.leadId === lead.id && payment.status === "paid")) {
+        state.payments.unshift({ id: id(), leadId: lead.id, amount: tariff.price, paidAt: dateOnly(), provider: "manual", status: "paid" });
+      }
       const activeSubscription = state.subscriptions.find((item) => item.leadId === lead.id && item.status === "active");
       if (activeSubscription) {
         activeSubscription.tariffId = tariff.id;
@@ -671,7 +790,7 @@ export function applyCrmAction(action: CrmAction): CrmState {
   if (action.type === "mark_refused") {
     const lead = state.leads.find((item) => item.id === action.payload.leadId);
     if (lead) {
-      lead.stage = 12;
+      lead.stage = 6;
       lead.status = "lost";
       lead.refusalReason = action.payload.reason;
       lead.temperature = "cold";
@@ -688,9 +807,16 @@ export function applyCrmAction(action: CrmAction): CrmState {
       const tariff = state.tariffs.find((item) => item.id === subscription.tariffId);
       subscription.nextPaymentAt = dateOnly(30);
       subscription.endsAt = dateOnly(90);
-      lead.stage = 10;
-      addActivity(state, lead.id, "payment", "Продление запущено", "Поставлены уведомления за 30/14/7/3 дня.");
-      if (tariff) addTask(state, lead.id, lead.ownerId, `Продлить подписку ${tariff.name}`, 7, "high");
+      lead.stage = 4;
+      lead.status = "client";
+      state.tasks
+        .filter((task) => task.leadId === lead.id && task.status === "open" && (task.automationKey?.startsWith(`renewal:${lead.id}`) || /продл/i.test(task.title)))
+        .forEach((task) => {
+          task.status = "done";
+          task.result = "Подписка успешно продлена";
+          task.history = [...(task.history ?? []), { at: today(), action: "completed", detail: "subscription_renewed" }];
+        });
+      addActivity(state, lead.id, "payment", "Подписка продлена", tariff ? `${tariff.name}; напоминания 30/14/7/3 дня будут рассчитаны от нового срока.` : "Срок подписки обновлён платформой.");
     }
   }
 
@@ -699,7 +825,7 @@ export function applyCrmAction(action: CrmAction): CrmState {
       if (action.payload.key === "no_answer_3") addActivity(state, lead.id, "message", "Автоматизация 3 дня", "Отправлено сообщение в последний активный канал.");
       if (action.payload.key === "no_answer_7") addTask(state, lead.id, lead.ownerId, "Нет ответа 7 дней: связаться вручную", 0, "high", "no_answer_7");
       if (action.payload.key === "no_answer_14") addActivity(state, lead.id, "warmup", "Автоматизация 14 дней", "Запущена реактивационная цепочка прогрева.");
-      if (action.payload.key === "missed_call" && lead.stage === 3) {
+      if (action.payload.key === "missed_call" && lead.stage === 1) {
         scheduleNoAnswerFollowUps(state, lead, lead.ownerId);
       }
     });
@@ -732,6 +858,19 @@ export async function applyCrmActionAsync(action: CrmAction): Promise<CrmState> 
   try {
     const nextState = applyCrmAction(action);
     await persistCrmStateAsync(globalForCrm.optiCrmState);
+    if (action.type === "update_user_access") {
+      const user = globalForCrm.optiCrmState.users.find((item) => item.id === action.payload.userId);
+      if (user) await saveUserSettings(user);
+    }
+    if (action.type === "update_lead_operations" || action.type === "set_scripts_sent") {
+      const lead = globalForCrm.optiCrmState.leads.find((item) => item.id === action.payload.leadId);
+      if (lead) await saveLeadOperations(lead, action.type === "set_scripts_sent" ? action.payload.actorId : undefined);
+    }
+    if (action.type === "create_lead") {
+      const lead = globalForCrm.optiCrmState.leads.find((item) => item.phone === action.payload.phone && item.email === action.payload.email);
+      if (lead) await saveLeadOperations(lead);
+    }
+    if (action.type === "set_activation_check") await saveActivationCheck(action.payload);
     return nextState;
   } finally {
     suppressLocalPersistence = false;
@@ -844,7 +983,7 @@ export function dashboardMetrics(state: CrmState): DashboardMetrics {
     : 0;
   const reachedStage = (lead: Lead, stage: number) => {
     if (stage === 0 || lead.stage === stage) return true;
-    if (lead.stage !== 12 && lead.stage >= stage) return true;
+    if (lead.stage !== 6 && lead.stage >= stage) return true;
     return state.activities.some((activity) => activity.leadId === lead.id && activity.type === "stage" && activity.detail === STAGES[stage]);
   };
   const stageConversions = STAGES.slice(0, -2).map((_, from) => {
@@ -866,12 +1005,12 @@ export function dashboardMetrics(state: CrmState): DashboardMetrics {
     const leadIds = new Set(leads.map((lead) => lead.id));
     const managerDeals = [...payingLeadIds].filter((leadId) => leadIds.has(leadId)).length;
     const revenue = paidPayments.filter((payment) => leadIds.has(payment.leadId)).reduce((sum, payment) => sum + payment.amount, 0);
-    const calls = state.activities.filter((activity) => activity.type === "call" && leadIds.has(activity.leadId)).length;
+    const calls = state.activities.filter((activity) => activity.type === "call" && leadIds.has(activity.leadId) && (activity.title === "Дозвонились" || activity.title === "Назначена встреча")).length;
     return { userId: user.id, calls, meetings: user.meetings, deals: managerDeals, revenue, conversion: leads.length ? roundPercent(managerDeals / leads.length) : 0 };
   });
   return {
     leads: state.leads.length,
-    calls: state.activities.filter((activity) => activity.type === "call").length,
+    calls: state.activities.filter((activity) => activity.type === "call" && (activity.title === "Дозвонились" || activity.title === "Назначена встреча")).length,
     deals,
     payments: paidPayments.length,
     paidRevenue,
@@ -884,6 +1023,35 @@ export function dashboardMetrics(state: CrmState): DashboardMetrics {
     channels,
     managers
   };
+}
+
+export function salesPeriodMetrics(state: CrmState, user: CrmUser): SalesPeriodMetrics {
+  const now = new Date();
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const weekStart = new Date(todayStart);
+  const weekday = weekStart.getDay() || 7;
+  weekStart.setDate(weekStart.getDate() - weekday + 1);
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+  const ownedLeadIds = new Set(
+    state.leads
+      .filter((lead) => user.role === "Менеджер" ? lead.ownerId === user.id : true)
+      .map((lead) => lead.id)
+  );
+  const periods = { today: todayStart, week: weekStart, month: monthStart } as const;
+  return Object.fromEntries(Object.entries(periods).map(([key, start]) => {
+    const leads = state.leads.filter((lead) => ownedLeadIds.has(lead.id) && Date.parse(lead.createdAt) >= start.getTime()).length;
+    const actualContacts = state.activities.filter((activity) => ownedLeadIds.has(activity.leadId)
+      && activity.type === "call"
+      && (activity.title === "Дозвонились" || activity.title === "Назначена встреча")
+      && Date.parse(activity.createdAt) >= start.getTime()).length;
+    const firstPayments = new Map<string, string>();
+    state.payments.filter((payment) => payment.status === "paid" && ownedLeadIds.has(payment.leadId)).forEach((payment) => {
+      const current = firstPayments.get(payment.leadId);
+      if (!current || payment.paidAt < current) firstPayments.set(payment.leadId, payment.paidAt);
+    });
+    const firstPaidDeals = [...firstPayments.values()].filter((paidAt) => Date.parse(`${paidAt.slice(0, 10)}T00:00:00`) >= start.getTime()).length;
+    return [key, { leads, actualContacts, firstPaidDeals }];
+  })) as SalesPeriodMetrics;
 }
 
 function roundPercent(value: number) {

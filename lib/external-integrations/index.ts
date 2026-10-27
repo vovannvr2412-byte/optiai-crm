@@ -206,7 +206,7 @@ async function importSheetRows(values: unknown[][]) {
       if (stageName && stage > 0) {
         pendingStages.set(phone, {
           stage,
-          refusalReason: stage === 12 ? cell("Причина отказа") || "Отказ импортирован из Google Sheets" : undefined
+          refusalReason: stage === 6 ? cell("Причина отказа") || "Отказ импортирован из Google Sheets" : undefined
         });
       }
     }

@@ -89,8 +89,14 @@ export async function clearSession() {
 
 export async function getSessionUserId() {
   if (supabaseAuthEnabled()) {
+    const cookieStore = await cookies();
+    const hasSupabaseSession = cookieStore.getAll().some(({ name, value }) => name.startsWith("sb-") && name.includes("-auth-token") && Boolean(value));
+    if (!hasSupabaseSession) return null;
     const auth = await createServerAuthClient();
-    const { data, error } = await auth.auth.getUser();
+    const { data, error } = await Promise.race([
+      auth.auth.getUser(),
+      new Promise<{ data: { user: null }; error: Error }>((resolve) => setTimeout(() => resolve({ data: { user: null }, error: new Error("Supabase Auth timed out") }), 3000))
+    ]);
     if (error || !data.user) return null;
     const { data: crmUser, error: crmError } = await createServiceSupabaseClient()
       .from("crm_users")

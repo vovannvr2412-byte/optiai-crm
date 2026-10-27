@@ -126,14 +126,83 @@ async function setAppStateValue(key: string, value: unknown) {
 }
 
 export async function readNormalizedCrmState() {
-  const { data, error } = await createServiceSupabaseClient().rpc("get_crm_state_normalized");
+  const supabase = createServiceSupabaseClient();
+  const { data, error } = await supabase.rpc("get_crm_state_normalized");
   if (error) throw new Error(`Не применена миграция 0004_normalized_crm_and_auth.sql: ${error.message}`);
-  return data as CrmState;
+  const state = data as CrmState;
+  const metadata = await supabase.from("tasks").select("id, due_time, task_type, description, result, manual_override, source, history");
+  if (!metadata.error) {
+    const byId = new Map((metadata.data ?? []).map((row) => [row.id, row]));
+    state.tasks.forEach((task) => {
+      const row = byId.get(task.id);
+      if (!row) return;
+      task.dueTime = row.due_time ?? undefined;
+      task.taskType = row.task_type ?? undefined;
+      task.description = row.description ?? undefined;
+      task.result = row.result ?? undefined;
+      task.manualOverride = Boolean(row.manual_override);
+      task.source = row.source ?? undefined;
+      task.history = Array.isArray(row.history) ? row.history : [];
+    });
+  }
+  const callMetadata = await supabase.from("call_records").select("id, call_result, duration_seconds, external_id");
+  if (!callMetadata.error) {
+    const byId = new Map((callMetadata.data ?? []).map((row) => [row.id, row]));
+    state.callRecords.forEach((call) => {
+      const row = byId.get(call.id);
+      if (!row) return;
+      call.callResult = row.call_result ?? undefined;
+      call.durationSeconds = Number(row.duration_seconds ?? 0);
+      call.externalId = row.external_id ?? undefined;
+    });
+  }
+  return state;
 }
 
 export async function writeNormalizedCrmState(state: CrmState) {
-  const { error } = await createServiceSupabaseClient().rpc("save_crm_state_normalized", { p_state: state });
+  const supabase = createServiceSupabaseClient();
+  const { error } = await supabase.rpc("save_crm_state_normalized", { p_state: state });
   if (error) throw new Error(`Не удалось сохранить нормализованные данные CRM: ${error.message}`);
+  if (state.tasks.length) {
+    const { error: metadataError } = await supabase.from("tasks").upsert(state.tasks.map((task) => ({
+      id: task.id,
+      lead_id: task.leadId,
+      owner_id: task.ownerId || null,
+      title: task.title,
+      due_at: task.dueAt,
+      priority: task.priority,
+      status: task.status,
+      automation_key: task.automationKey ?? null,
+      due_time: task.dueTime ?? null,
+      task_type: task.taskType ?? "other",
+      description: task.description ?? "",
+      result: task.result ?? null,
+      manual_override: Boolean(task.manualOverride),
+      source: task.source ?? (task.automationKey ? "automation" : "manual"),
+      history: task.history ?? []
+    })), { onConflict: "id" });
+    if (metadataError && metadataError.code !== "42703") throw metadataError;
+  }
+  if (state.callRecords.length) {
+    const { error: callError } = await supabase.from("call_records").upsert(state.callRecords.map((call) => ({
+      id: call.id,
+      lead_id: call.leadId,
+      owner_id: call.ownerId || null,
+      recording_url: call.recordingUrl || null,
+      transcript: call.transcript || null,
+      summary: call.summary || null,
+      objections: call.objections,
+      next_steps: call.nextSteps,
+      interest: call.interest,
+      deal_probability: call.dealProbability,
+      manager_mistakes: call.managerMistakes,
+      created_at: call.createdAt,
+      call_result: call.callResult ?? null,
+      duration_seconds: call.durationSeconds ?? 0,
+      external_id: call.externalId ?? null
+    })), { onConflict: "id" });
+    if (callError && callError.code !== "42703") throw callError;
+  }
 }
 
 async function updateMessengerReferences(maps: IdMaps) {

@@ -1,5 +1,5 @@
-import { CrmApp } from "@/components/crm-app";
+import { OperationsHome } from "@/components/os/operations-home";
 
 export default function Home() {
-  return <CrmApp />;
+  return <OperationsHome />;
 }

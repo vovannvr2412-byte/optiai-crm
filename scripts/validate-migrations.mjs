@@ -35,6 +35,9 @@ const security = await sql("supabase/migrations/0005_single_company_security.sql
 const automations = await sql("supabase/migrations/0006_tasks_and_automations.sql");
 const telegramReplacement = await sql("supabase/migrations/0007_telegram_bot_replacement.sql");
 const externalIntegrations = await sql("supabase/migrations/0008_external_integrations_and_web_push.sql");
+const warmupAndAi = await sql("supabase/migrations/0009_warmup_editor_and_ai.sql");
+const aiAutopilot = await sql("supabase/migrations/0010_ai_messaging_autopilot.sql");
+const operationsOs = await sql("supabase/migrations/0011_operations_os.sql");
 const seed = await sql("supabase/seed.sql");
 
 await db.exec(initial);
@@ -69,6 +72,12 @@ await db.exec(telegramReplacement);
 await db.exec(telegramReplacement);
 await db.exec(externalIntegrations);
 await db.exec(externalIntegrations);
+await db.exec(warmupAndAi);
+await db.exec(warmupAndAi);
+await db.exec(aiAutopilot);
+await db.exec(aiAutopilot);
+await db.exec(operationsOs);
+await db.exec(operationsOs);
 
 const upgradedAssignments = await db.query(`
   select id, status, started_at::text as started_at
@@ -166,6 +175,11 @@ const productionTables = await db.query("select table_name from information_sche
 assert.equal(productionTables.rows.length, 3);
 const pushPolicies = await db.query("select policyname from pg_policies where schemaname = 'public' and tablename = 'push_subscriptions'");
 assert(pushPolicies.rows.some((row) => row.policyname === "users read own push subscriptions"));
+const operationsTables = await db.query("select table_name from information_schema.tables where table_schema = 'public' and table_name in ('os_user_settings', 'lead_os_profiles', 'lead_activation_checks', 'client_documents', 'optiai_events', 'routines_workspace')");
+assert.equal(operationsTables.rows.length, 6);
+const operationsStages = await db.query("select stage_order, name from public.pipeline_stages order by stage_order");
+assert.equal(operationsStages.rows.length, 7);
+assert.deepEqual(operationsStages.rows.map((row) => row.name), ["Новый лид", "Прогрев", "Планирует оплату", "Оплата и подключение", "Подключён", "Не продлил подписку", "Отказ"]);
 
 const eventArguments = [
   "migration-test:event-1",

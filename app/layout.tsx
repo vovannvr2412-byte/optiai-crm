@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "OptiAI CRM",
-  description: "Revenue Operating System для продаж SEO + GEO на автопилоте"
+  title: "OptiAI Operations OS",
+  description: "Единое рабочее пространство продаж, клиентов, контента и операционных процессов"
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {

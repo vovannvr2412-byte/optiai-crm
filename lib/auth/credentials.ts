@@ -16,8 +16,7 @@ const credentialsFile = path.join(dataDir, "credentials.json");
 const tempCredentialsFile = path.join(dataDir, "credentials.tmp.json");
 
 const demoPasswords: Record<string, string> = {
-  "owner@optiai.ru": "Owner2026!",
-  "rop@optiai.ru": "Rop2026!"
+  "owner@optiai.ru": "Owner2026!"
 };
 
 function localCredentialFilesEnabled() {

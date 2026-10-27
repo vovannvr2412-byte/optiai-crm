@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { runAutomationScheduler } from "@/lib/automations/scheduler";
+import { processPendingRegistrations } from "@/lib/optiai/events";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -12,7 +13,8 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: "Недействительный ключ планировщика" }, { status: 401 });
   }
   try {
-    return NextResponse.json({ ok: true, ...(await runAutomationScheduler()) }, {
+    const [automations, registrations] = await Promise.all([runAutomationScheduler(), processPendingRegistrations()]);
+    return NextResponse.json({ ok: true, ...automations, registrations }, {
       headers: { "Cache-Control": "private, no-store" }
     });
   } catch (error) {

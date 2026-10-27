@@ -1,9 +1,11 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import clsx from "clsx";
 import {
   Bell,
+  ArrowLeft,
   Bot,
   BriefcaseBusiness,
   CalendarCheck2,
@@ -29,7 +31,7 @@ import {
   UsersRound,
   X
 } from "lucide-react";
-import { ROLE_PERMISSIONS, STAGES, VIEW_TITLES, type CrmAction, type CrmState, type CrmUser, type DashboardMetrics, type Lead, type ManualCallResult, type Role, type ViewId } from "@/lib/crm/types";
+import { ROLE_PERMISSIONS, STAGES, VIEW_TITLES, type CrmAction, type CrmState, type CrmUser, type DashboardMetrics, type Lead, type ManualCallResult, type OsAppId, type Role, type SalesPeriodMetrics, type ViewId } from "@/lib/crm/types";
 import { MessengerCenter } from "@/components/messenger-center";
 import type { MessengerChannel, MessengerConnection } from "@/lib/messaging/types";
 import { uploadMediaFile } from "@/lib/media/client";
@@ -38,11 +40,13 @@ import type { CrmNotification } from "@/lib/notifications/store";
 import type { AutomationStatus } from "@/lib/automations/scheduler";
 import { readApiJson, readApiJsonOrNull } from "@/lib/api/client";
 import type { AiConfigurationSummary } from "@/lib/ai/types";
+import { OS_APPS, appAccessFor } from "@/lib/os/apps";
 
 type Bootstrap = {
   currentUser: CrmUser;
   state: CrmState;
   metrics: DashboardMetrics;
+  salesMetrics: SalesPeriodMetrics;
   notifications?: CrmNotification[];
   automationStatus?: AutomationStatus;
   auditLog?: {
@@ -107,9 +111,19 @@ const navItems: { id: ViewId; icon: typeof LayoutDashboard }[] = [
 const roleDescriptions: Record<Role, string> = {
   Руководитель: "Полный доступ ко всем данным, деньгам, команде и интеграциям.",
   РОП: "Управляет продажами, командой, воронкой и прогнозом.",
-  Менеджер: "Видит только свои сделки, звонки, задачи и прогревы.",
-  "Аккаунт-менеджер": "Видит действующих клиентов, продления и удержание."
+  Менеджер: "Видит общую базу лидов, а изменяет назначенные ему сделки, задачи и прогревы.",
+  "Аккаунт-менеджер": "Видит действующих клиентов, продления и удержание.",
+  "Технический специалист": "Работает с лидами, подключениями и техническими настройками."
 };
+
+const activationCheckLabels = [
+  ["questionnaire_sent", "Анкета отправлена"],
+  ["questionnaire_received", "Анкета получена"],
+  ["integration_completed", "Интеграция выполнена"],
+  ["keywords_approved", "Ключевые слова согласованы"],
+  ["subscription_activated", "Подписка активирована"],
+  ["days_added", "Дни добавлены"]
+] as const;
 
 function urlBase64ToUint8Array(value: string) {
   const padding = "=".repeat((4 - value.length % 4) % 4);
@@ -165,13 +179,26 @@ function deniedPushMessage() {
 }
 
 function leadStatusForStage(stage: number): Lead["status"] {
-  if (stage === 12) return "lost";
-  if (stage >= 9) return "client";
-  if (stage >= 6) return "warmup";
+  if (stage === 6) return "lost";
+  if (stage === 4) return "client";
+  if (stage === 1) return "warmup";
   return "sales";
 }
 
-export function CrmApp() {
+type CrmAppMode = "leads" | "management" | "settings" | "team";
+
+const modeViews: Record<CrmAppMode, ViewId[]> = {
+  leads: ["dashboard", "tasks", "pipeline", "messengers", "lead", "callcenter", "warmup"],
+  management: ["management", "subscriptions", "messengers", "lead"],
+  settings: ["automations"],
+  team: ["team"]
+};
+
+const modeApp = { leads: "leads", management: "management", settings: "settings", team: "team" } as const;
+const modeTitle = { leads: "Лиды CRM", management: "Панель управления", settings: "Настройки", team: "Команда" } as const;
+
+export function CrmApp({ mode = "leads" }: { mode?: CrmAppMode }) {
+  const [referenceNow] = useState(() => Date.now());
   const [bootstrap, setBootstrap] = useState<Bootstrap | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
   const [activeView, setActiveView] = useState<ViewId>("dashboard");
@@ -184,6 +211,9 @@ export function CrmApp() {
   const [selectedWarmupSequenceId, setSelectedWarmupSequenceId] = useState("");
   const [selectedWarmupStepId, setSelectedWarmupStepId] = useState("");
   const [taskFilter, setTaskFilter] = useState<"open" | "done" | "cancelled">("open");
+  const [salesPeriod, setSalesPeriod] = useState<"today" | "week" | "month">("week");
+  const [managementPeriod, setManagementPeriod] = useState<"today" | "week" | "month">("month");
+  const [managementClientFilter, setManagementClientFilter] = useState<"all" | "active" | "former">("all");
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [pushSubscribed, setPushSubscribed] = useState(false);
   const [toast, setToast] = useState("");
@@ -202,7 +232,7 @@ export function CrmApp() {
   }, [toast]);
 
   const load = useCallback(async () => {
-    const response = await fetch("/api/crm/bootstrap", { cache: "no-store" });
+    const response = await fetch(`/api/crm/bootstrap?app=${modeApp[mode]}`, { cache: "no-store" });
     if (response.status === 401) {
       setBootstrap(null);
       setAuthChecked(true);
@@ -210,7 +240,7 @@ export function CrmApp() {
     }
     const data = await readApiJson<Bootstrap>(response);
     setBootstrap(data);
-    const allowedForUser = ROLE_PERMISSIONS[data.currentUser.role];
+    const allowedForUser = ROLE_PERMISSIONS[data.currentUser.role].filter((view) => modeViews[mode].includes(view));
     const params = new URLSearchParams(window.location.search);
     const linkedLeadId = params.get("lead");
     const linkedView = params.get("view") as ViewId | null;
@@ -230,12 +260,12 @@ export function CrmApp() {
     if (linkedLeadId || linkedView) window.history.replaceState({}, "", window.location.pathname);
     setAuthChecked(true);
     return true;
-  }, []);
+  }, [mode]);
 
   useEffect(() => {
     // Initial bootstrap is an external API synchronization, not derived client state.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    void load();
+    void load().catch(() => setAuthChecked(true));
   }, [load]);
 
   const signedInUserId = bootstrap?.currentUser.id;
@@ -419,9 +449,10 @@ export function CrmApp() {
   const state = bootstrap?.state;
   const metrics = bootstrap?.metrics;
   const currentUser = bootstrap?.currentUser;
-  const allowedViews = currentUser ? ROLE_PERMISSIONS[currentUser.role] : ROLE_PERMISSIONS["Руководитель"];
+  const allowedViews = (currentUser ? ROLE_PERMISSIONS[currentUser.role] : ROLE_PERMISSIONS["Руководитель"])
+    .filter((view) => modeViews[mode].includes(view));
   const canCreateUsers = currentUser?.role === "Руководитель" || currentUser?.role === "РОП";
-  const canCreateLeads = currentUser?.role !== "Аккаунт-менеджер";
+  const canCreateLeads = currentUser ? currentUser.role === "Руководитель" || currentUser.role === "РОП" || currentUser.role === "Менеджер" : false;
   const canDeleteLeads = currentUser?.role === "Руководитель" || currentUser?.role === "РОП";
   const unreadNotifications = (bootstrap?.notifications ?? []).filter((item) => !item.readAt);
 
@@ -439,6 +470,10 @@ export function CrmApp() {
       const owner = (state?.users ?? []).find((user) => user.id === lead.ownerId);
       const haystack = [
         lead.companyName,
+        lead.projectName,
+        lead.optiaiLogin,
+        lead.optiaiAccountId,
+        lead.site,
         lead.contactName,
         lead.contactRole,
         lead.phone,
@@ -464,6 +499,10 @@ export function CrmApp() {
       const owner = (state?.users ?? []).find((user) => user.id === lead.ownerId);
       const haystack = [
         lead.companyName,
+        lead.projectName,
+        lead.optiaiLogin,
+        lead.optiaiAccountId,
+        lead.site,
         lead.contactName,
         lead.contactRole,
         lead.phone,
@@ -482,6 +521,23 @@ export function CrmApp() {
     }).slice(0, 8);
   }, [query, state?.leads, state?.users]);
 
+  const managementClients = useMemo(() => {
+    const subscriptions = state?.subscriptions ?? [];
+    const payments = state?.payments ?? [];
+    return filteredLeads
+      .filter((lead) => subscriptions.some((item) => item.leadId === lead.id) || payments.some((item) => item.leadId === lead.id) || lead.stage === 4 || lead.stage === 5)
+      .filter((lead) => {
+        if (managementClientFilter === "all") return true;
+        const active = subscriptions.some((item) => item.leadId === lead.id && item.status === "active");
+        return managementClientFilter === "active" ? active : !active;
+      })
+      .sort((left, right) => {
+        const leftSubscription = subscriptions.find((item) => item.leadId === left.id);
+        const rightSubscription = subscriptions.find((item) => item.leadId === right.id);
+        return (leftSubscription?.nextPaymentAt ?? "9999").localeCompare(rightSubscription?.nextPaymentAt ?? "9999");
+      });
+  }, [filteredLeads, managementClientFilter, state?.payments, state?.subscriptions]);
+
   if (!authChecked) {
     return (
       <main className="grid min-h-screen place-items-center text-neutral-900">
@@ -494,7 +550,7 @@ export function CrmApp() {
     return <LoginScreen onLogin={load} />;
   }
 
-  function openLead(lead: Lead, view: ViewId = "pipeline") {
+  function openLead(lead: Lead, view: ViewId = mode === "leads" ? "pipeline" : "lead") {
     setSelectedLeadId(lead.id);
     setActiveView(view);
   }
@@ -510,7 +566,7 @@ export function CrmApp() {
 
   function tariffName(tariffId?: string) {
     const tariff = (bootstrap?.state.tariffs ?? []).find((item) => item.id === tariffId);
-    return tariff ? `${tariff.name} · ${money(tariff.price)}` : "тариф не выбран";
+    return tariff ? tariff.price > 0 ? `${tariff.name} · ${money(tariff.price)}` : tariff.name : "тариф не выбран";
   }
 
   async function moveLeadToStage(lead: Lead, targetStage: number) {
@@ -540,6 +596,9 @@ export function CrmApp() {
 
   function renderPipelineActions(lead: Lead) {
     if (!state || !currentUser) return null;
+    if (currentUser.role !== "Руководитель" && currentUser.role !== "РОП" && lead.ownerId !== currentUser.id) {
+      return <span className="ui-badge">Просмотр · отвечает {userName(lead.ownerId)}</span>;
+    }
 
     const openRefusal = () => {
       setSelectedLeadId(lead.id);
@@ -552,93 +611,72 @@ export function CrmApp() {
     const danger = "ui-button ui-button-danger min-h-8 px-2.5 py-1 text-xs";
     const success = "ui-button ui-button-success min-h-8 px-2.5 py-1 text-xs";
 
-    if (lead.stage === 0) {
-      return <button disabled={loadingAction} onClick={() => void moveLeadToStage(lead, 1)} className={primary}>Далее: контакт найден</button>;
-    }
-
-    if (lead.stage === 1) {
-      return <button disabled={loadingAction} onClick={() => void moveLeadToStage(lead, 2)} className={primary}>Далее: первый звонок</button>;
-    }
-
-    if (lead.stage === 2 || lead.stage === 3) {
-      return (
-        <a
-          href={phoneHref(lead.phone)}
-          onClick={() => {
-            setSelectedLeadId(lead.id);
-            setModal("callResult");
-          }}
-          className={primary}
-        >
-          <PhoneCall size={15} /> Позвонить
-        </a>
-      );
-    }
-
-    if (lead.stage === 4) {
-      return <button disabled={loadingAction} onClick={() => void moveLeadToStage(lead, 5)} className={primary}>Далее: аудит отправлен</button>;
-    }
-
-    if (lead.stage === 5) {
-      return <button disabled={loadingAction || !state.warmupSequences.some((sequence) => sequence.active)} onClick={() => { setSelectedLeadId(lead.id); setModal("assignWarmup"); }} className={warning}>Далее: выбрать прогрев</button>;
-    }
-
-    if (lead.stage === 6) {
-      return (
-        <>
-          <button disabled={loadingAction} onClick={() => void runAction({ type: "send_message", payload: { leadId: lead.id, channel: "Telegram", text: "Отправлено касание прогрева по текущему сценарию." } }, "Касание прогрева отправлено.")} className={neutral}>Касание</button>
-          <button disabled={loadingAction} onClick={() => void moveLeadToStage(lead, 7)} className={primary}>Далее: сделка/отказ</button>
-        </>
-      );
-    }
-
-    if (lead.stage === 7) {
-      return (
-        <>
-          <button disabled={loadingAction} onClick={() => void moveLeadToStage(lead, 8)} className={primary}>Далее: оплата</button>
+    if (lead.stage === 0) return (
+      <>
+        <a href={phoneHref(lead.phone)} onClick={() => { setSelectedLeadId(lead.id); setModal("callResult"); }} className={primary}><PhoneCall size={15} /> Позвонить</a>
+        <button disabled={loadingAction} onClick={() => void moveLeadToStage(lead, 1)} className={warning}>В прогрев</button>
+      </>
+    );
+    if (lead.stage === 1) return (
+      <>
+        <button disabled={loadingAction || !state.warmupSequences.some((sequence) => sequence.active)} onClick={() => { setSelectedLeadId(lead.id); setModal("assignWarmup"); }} className={neutral}>Назначить цепочку</button>
+        <button disabled={loadingAction} onClick={() => void moveLeadToStage(lead, 2)} className={primary}>Планирует оплату</button>
+        <button disabled={loadingAction} onClick={openRefusal} className={danger}>Отказ</button>
+      </>
+    );
+    if (lead.stage === 2) return (
+      <>
+        <button disabled={loadingAction} onClick={() => void moveLeadToStage(lead, 3)} className={primary}>К оплате и подключению</button>
+        <button disabled={loadingAction} onClick={openRefusal} className={danger}>Отказ</button>
+      </>
+    );
+    if (lead.stage === 3) return (
+      <div className="grid w-full gap-2">
+        <div className="grid gap-1 rounded-md border border-slate-200 bg-slate-50 p-2">
+          {activationCheckLabels.map(([code, label]) => {
+            const check = lead.activationChecks?.find((item) => item.code === code);
+            return <div key={code} className="flex items-center gap-2 text-xs font-semibold text-slate-700"><label className="flex min-w-0 flex-1 items-center gap-2"><input type="checkbox" checked={Boolean(check?.completedAt)} disabled={check?.notApplicable} onChange={(event) => void runAction({ type: "set_activation_check", payload: { leadId: lead.id, code, completed: event.target.checked, notApplicable: false, actorId: currentUser.id } }, `${label}: ${event.target.checked ? "выполнено" : "возвращено в работу"}.`)} /> <span>{label}</span></label><button type="button" onClick={() => void runAction({ type: "set_activation_check", payload: { leadId: lead.id, code, completed: false, notApplicable: !check?.notApplicable, actorId: currentUser.id } }, `${label}: статус обновлён.`)} className={clsx("rounded px-1.5 py-1 text-[10px]", check?.notApplicable ? "bg-slate-700 text-white" : "bg-white text-slate-500")}>Н/П</button>{check?.completedAt && <small className="text-slate-400">{dateLabel(check.completedAt)}</small>}</div>;
+          })}
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <button disabled={loadingAction || state.tariffs.length === 0} onClick={() => void runAction({ type: "mark_paid", payload: { leadId: lead.id, tariffId: lead.tariffId ?? state.tariffs[0]!.id } }, "Первая оплата зафиксирована.")} className={success}>Отметить оплату</button>
+          <button disabled={loadingAction || activationCheckLabels.some(([code]) => { const check = lead.activationChecks?.find((item) => item.code === code); return !check?.completedAt && !check?.notApplicable; })} onClick={() => void moveLeadToStage(lead, 4)} className={primary}>Подключён</button>
           <button disabled={loadingAction} onClick={openRefusal} className={danger}>Отказ</button>
-        </>
-      );
-    }
-
-    if (lead.stage === 8) {
-      return <button disabled={loadingAction} onClick={() => void runAction({ type: "mark_paid", payload: { leadId: lead.id, tariffId: lead.tariffId ?? state.tariffs[0].id } }, "Оплата отмечена, клиент подключен.")} className={success}>Далее: отметить оплату</button>;
-    }
-
-    if (lead.stage === 9) {
-      return <button disabled={loadingAction} onClick={() => void moveLeadToStage(lead, 10)} className={primary}>Далее: продление</button>;
-    }
-
-    if (lead.stage === 10) {
-      return (
-        <>
-          <button disabled={loadingAction || !subscription} onClick={() => subscription && void runAction({ type: "renew_subscription", payload: { subscriptionId: subscription.id } }, "Продление запущено.")} className={warning}>Продлить</button>
-          <button disabled={loadingAction} onClick={() => void moveLeadToStage(lead, 11)} className={primary}>Далее: апселл</button>
-        </>
-      );
-    }
-
-    if (lead.stage === 11) {
-      return (
-        <>
-          <button disabled={loadingAction} onClick={() => void runAction({ type: "mark_paid", payload: { leadId: lead.id, tariffId: lead.tariffId ?? state.tariffs[0].id } }, "Оплата апселла отмечена.")} className={success}>Оплата</button>
-          <button disabled={loadingAction} onClick={openRefusal} className={danger}>Отказ</button>
-        </>
-      );
-    }
-
-    return <span className="ui-badge">Завершено</span>;
+        </div>
+      </div>
+    );
+    if (lead.stage === 5) return (
+      <>
+        <button disabled={loadingAction || !subscription} onClick={() => subscription && void runAction({ type: "renew_subscription", payload: { subscriptionId: subscription.id } }, "Подписка продлена, клиент возвращён в базу подключённых.")} className={success}>Продлить</button>
+        <button disabled={loadingAction} onClick={openRefusal} className={danger}>Отказ</button>
+      </>
+    );
+    return <span className="ui-badge">Этап завершён</span>;
   }
 
+  const managementStart = (() => {
+    const now = new Date();
+    if (managementPeriod === "today") return new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    if (managementPeriod === "month") return new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+    const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    start.setDate(start.getDate() - (start.getDay() || 7) + 1);
+    return start.getTime();
+  })();
+  const periodPayments = state?.payments.filter((payment) => payment.status === "paid" && Date.parse(`${payment.paidAt.slice(0, 10)}T00:00:00`) >= managementStart) ?? [];
+  const firstPaymentByLead = new Map<string, string>();
+  (state?.payments ?? []).filter((payment) => payment.status === "paid").forEach((payment) => { const previous = firstPaymentByLead.get(payment.leadId); if (!previous || payment.paidAt < previous) firstPaymentByLead.set(payment.leadId, payment.paidAt); });
+  const activeSubscriptions = state?.subscriptions.filter((item) => item.status === "active") ?? [];
+  const monthEnd = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0, 23, 59, 59).getTime();
+  const potentialForecast = activeSubscriptions.filter((subscription) => { const due = Date.parse(subscription.nextPaymentAt); return due >= referenceNow && due <= monthEnd; }).reduce((sum, subscription) => sum + (state?.tariffs.find((tariff) => tariff.id === subscription.tariffId)?.price ?? 0), 0);
   const dashboardCards = [
-    ["Лиды", metrics.leads.toString(), "создано за всё время"],
-    ["Звонки", metrics.calls.toString(), "зафиксированные результаты"],
-    ["Сделки", metrics.deals.toString(), `${metrics.conversion}% лидов оплатили`],
-    ["Оплаты", money(metrics.paidRevenue), `${metrics.payments} успешных платежей`],
-    ["MRR", money(metrics.mrr), "активные месячные подписки"],
-    ["Churn", `${metrics.churn}%`, "отменённые подписки"],
-    ["LTV", money(metrics.ltv), "средняя выручка на клиента"],
-    ["Срок жизни", `${metrics.averageLifetimeMonths} мес.`, "среднее по подпискам"]
+    ["Активные клиенты", activeSubscriptions.length.toString(), "действующие оплаченные подписки"],
+    ["Новые клиенты", [...firstPaymentByLead.values()].filter((date) => Date.parse(`${date.slice(0, 10)}T00:00:00`) >= managementStart).length.toString(), "первая оплата за период"],
+    ["Потерянные клиенты", (state?.subscriptions.filter((item) => item.status === "cancelled").length ?? 0).toString(), "подписка завершена без продления"],
+    ["Оплаты", periodPayments.length.toString(), `${money(periodPayments.reduce((sum, payment) => sum + payment.amount, 0))} за период`],
+    ["Churn", `${metrics.churn}%`, "потерянные относительно клиентской базы"],
+    ["LTV, ₽", money(metrics.ltv), "выручка / уникальные платившие клиенты"],
+    ["LTV, мес.", `${metrics.averageLifetimeMonths} мес.`, "средняя длительность жизни клиента"],
+    ["Потенциальный прогноз", money(potentialForecast), "ожидаемые продления до конца месяца"]
   ];
   const maxChannelLeads = Math.max(1, ...metrics.channels.map((channel) => channel.leads));
   const todayKey = new Date().toISOString().slice(0, 10);
@@ -649,11 +687,12 @@ export function CrmApp() {
   return (
     <div className="crm-shell">
       <aside className="crm-sidebar">
-        <div className="mb-6 flex items-center gap-3 px-1 max-lg:justify-center">
+        <div className="mb-6 flex items-center gap-2 px-1 max-lg:justify-center">
+          <Link href="/" className="crm-home-link" aria-label="К приложениям" title="К приложениям"><ArrowLeft size={17} /></Link>
           <div className="crm-brand-mark">OA</div>
           <div className="max-lg:hidden">
-            <strong className="block text-sm">OptiAI CRM</strong>
-            <span className="text-xs text-slate-400">Revenue operations</span>
+            <strong className="block text-sm">{modeTitle[mode]}</strong>
+            <span className="text-xs text-slate-400">OptiAI Operations OS</span>
           </div>
         </div>
 
@@ -702,7 +741,7 @@ export function CrmApp() {
       <main className="crm-main">
         <header className="crm-topbar mb-6 max-xl:items-start max-xl:flex-col">
           <div>
-            <p className="text-xs font-semibold text-slate-500">OptiAI / {VIEW_TITLES[activeView]}</p>
+            <p className="text-xs font-semibold text-slate-500">{modeTitle[mode]} / {VIEW_TITLES[activeView]}</p>
             <h1 className="mt-1 text-2xl font-bold text-[#202939]">{VIEW_TITLES[activeView]}</h1>
           </div>
 
@@ -714,7 +753,7 @@ export function CrmApp() {
                   value={query}
                   onChange={(event) => setQuery(event.target.value)}
                   onKeyDown={(event) => {
-                    if (event.key === "Enter" && query.trim()) setActiveView("pipeline");
+                    if (event.key === "Enter" && query.trim()) setActiveView(mode === "leads" ? "pipeline" : "lead");
                     if (event.key === "Escape") setQuery("");
                   }}
                   placeholder="Компания, контакт, телефон"
@@ -738,7 +777,7 @@ export function CrmApp() {
                     </button>
                   ))}
                   {searchResults.length > 0 && (
-                    <button onClick={() => setActiveView("pipeline")} className="ui-button ui-button-secondary mt-1 w-full">Показать в воронке</button>
+                    <Link href={{ pathname: "/apps/leads", query: { view: "pipeline" } }} className="ui-button ui-button-secondary mt-1 w-full">Показать в воронке</Link>
                   )}
                 </div>
               )}
@@ -795,15 +834,15 @@ export function CrmApp() {
                 </div>
               )}
             </div>
-            <button
+            {selectedLead && <button
               onClick={() => selectedLead && openLead(selectedLead)}
               className="ui-button ui-button-secondary ui-icon-button"
               aria-label="Открыть текущего лида в воронке"
               title="Открыть в воронке"
             >
               <PhoneCall size={19} />
-            </button>
-            {canCreateLeads && <button onClick={() => setModal("newLead")} className="ui-button ui-button-primary">
+            </button>}
+            {mode === "leads" && canCreateLeads && <button onClick={() => setModal("newLead")} className="ui-button ui-button-primary">
               <Plus size={18} /> Новый лид
             </button>}
           </div>
@@ -811,6 +850,32 @@ export function CrmApp() {
 
         {activeView === "dashboard" && (
           <section className="grid gap-4">
+            <div className="flex flex-wrap items-end justify-between gap-3">
+              <div><h2 className="text-lg font-bold text-[#202939]">Работа с продажами</h2><p className="mt-1 text-sm text-slate-600">Только лиды, состоявшиеся телефонные контакты и первые оплаченные сделки.</p></div>
+              <div className="grid grid-cols-3 rounded-lg border border-[#E5E7EB] bg-white p-1">
+                {(["today", "week", "month"] as const).map((period) => <button key={period} onClick={() => setSalesPeriod(period)} className={clsx("rounded-md px-3 py-2 text-xs font-semibold", salesPeriod === period ? "bg-[#EEF1FF] text-[#4357D9]" : "text-slate-600")}>{period === "today" ? "Сегодня" : period === "week" ? "Неделя" : "Месяц"}</button>)}
+              </div>
+            </div>
+            <div className="grid grid-cols-3 gap-3 max-md:grid-cols-1">
+              <article className="crm-kpi"><span className="text-xs font-semibold text-slate-500">Новые лиды</span><strong className="mt-2 block text-2xl font-bold tabular-nums">{bootstrap.salesMetrics[salesPeriod].leads}</strong><small className="mt-1 block text-xs text-slate-500">созданы за выбранный период</small></article>
+              <article className="crm-kpi"><span className="text-xs font-semibold text-slate-500">Фактические контакты</span><strong className="mt-2 block text-2xl font-bold tabular-nums">{bootstrap.salesMetrics[salesPeriod].actualContacts}</strong><small className="mt-1 block text-xs text-slate-500">только состоявшиеся разговоры</small></article>
+              <article className="crm-kpi"><span className="text-xs font-semibold text-slate-500">Первые оплаты</span><strong className="mt-2 block text-2xl font-bold tabular-nums">{bootstrap.salesMetrics[salesPeriod].firstPaidDeals}</strong><small className="mt-1 block text-xs text-slate-500">новые оплаченные сделки</small></article>
+            </div>
+            <Panel title="Мои задачи на сегодня" subtitle="Просроченные задачи и действия с дедлайном сегодня.">
+              <div className="grid gap-2">
+                {state.tasks.filter((task) => task.ownerId === currentUser.id && task.status === "open" && task.dueAt <= todayKey).length === 0 && <EmptyState title="На сегодня задач нет" text="Новые задачи появятся из воронки, прогревов и автоматизаций." />}
+                {state.tasks.filter((task) => task.ownerId === currentUser.id && task.status === "open" && task.dueAt <= todayKey).sort((a, b) => a.dueAt.localeCompare(b.dueAt)).slice(0, 8).map((task) => {
+                  const lead = state.leads.find((item) => item.id === task.leadId);
+                  return <button key={task.id} onClick={() => lead && openLead(lead)} className={clsx("rounded-lg border p-3 text-left", task.dueAt < todayKey ? "border-rose-300 bg-rose-50" : "border-[#E5E7EB] bg-[#F8FAFC]")}><strong className="block text-[#202939]">{task.title}</strong><span className="mt-1 block text-xs text-slate-600">{lead?.companyName ?? "Лид"} · {task.dueAt < todayKey ? "Просрочено" : "Сегодня"}</span></button>;
+                })}
+              </div>
+            </Panel>
+          </section>
+        )}
+
+        {activeView === "management" && (
+          <section className="grid gap-4">
+            <div className="flex flex-wrap items-end justify-between gap-3"><div><h2 className="text-lg font-bold">Состояние клиентской базы</h2><p className="mt-1 text-sm text-slate-600">Метрики рассчитаны только по фактическим данным CRM и OptiAI.</p></div><div className="grid grid-cols-3 rounded-lg border border-[#E5E7EB] bg-white p-1">{(["today", "week", "month"] as const).map((period) => <button key={period} onClick={() => setManagementPeriod(period)} className={clsx("rounded-md px-3 py-2 text-xs font-semibold", managementPeriod === period ? "bg-[#EEF1FF] text-[#4357D9]" : "text-slate-600")}>{period === "today" ? "Сегодня" : period === "week" ? "Неделя" : "Месяц"}</button>)}</div></div>
             <div className="grid grid-cols-4 gap-3 max-2xl:grid-cols-3 max-lg:grid-cols-2 max-sm:grid-cols-1">
               {dashboardCards.map(([label, value, hint]) => (
                 <article key={label} className="crm-kpi">
@@ -820,6 +885,26 @@ export function CrmApp() {
                 </article>
               ))}
             </div>
+
+            <Panel title="Клиентская база" subtitle="Действующие и бывшие клиенты из общей базы OptiAI; поиск работает по компании, проекту, контактам и аккаунту.">
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+                <div className="inline-flex rounded-lg border border-[#E5E7EB] bg-white p-1">
+                  {(["all", "active", "former"] as const).map((filter) => <button key={filter} type="button" onClick={() => setManagementClientFilter(filter)} className={clsx("rounded-md px-3 py-2 text-xs font-semibold", managementClientFilter === filter ? "bg-[#EEF1FF] text-[#4357D9]" : "text-slate-600")}>{filter === "all" ? "Все" : filter === "active" ? "Действующие" : "Бывшие"}</button>)}
+                </div>
+                <span className="text-xs text-slate-500">{managementClients.length} клиентов</span>
+              </div>
+              {managementClients.length === 0 ? <EmptyState title="Клиентов пока нет" text="Здесь появятся только клиенты с реальной оплатой, подпиской или подтверждённым подключением." /> : <div className="overflow-x-auto">
+                <table className="w-full min-w-[980px] text-left text-sm">
+                  <thead className="text-xs text-slate-500"><tr><th className="pb-2">Компания / проект</th><th className="pb-2">Тариф</th><th className="pb-2">Статус</th><th className="pb-2">Первая оплата</th><th className="pb-2">Следующая оплата</th><th className="pb-2">Окончание</th><th className="pb-2">Ответственный</th><th className="pb-2 text-right">Действие</th></tr></thead>
+                  <tbody>{managementClients.map((lead) => {
+                    const subscription = state.subscriptions.find((item) => item.leadId === lead.id);
+                    const firstPayment = state.payments.filter((item) => item.leadId === lead.id && item.status === "paid").sort((a, b) => a.paidAt.localeCompare(b.paidAt))[0];
+                    const status = subscription?.status === "active" ? "Активен" : lead.stage === 5 ? "Не продлил" : "Бывший клиент";
+                    return <tr key={lead.id} className="border-t border-slate-100"><td className="py-3"><strong className="block text-[#202939]">{lead.companyName}</strong><span className="text-xs text-slate-500">{lead.projectName || lead.site}</span></td><td className="py-3">{tariffName(subscription?.tariffId ?? lead.tariffId)}</td><td className="py-3"><Badge>{status}</Badge></td><td className="py-3">{dateLabel(firstPayment?.paidAt)}</td><td className="py-3">{dateLabel(subscription?.nextPaymentAt)}</td><td className="py-3">{dateLabel(subscription?.endsAt)}</td><td className="py-3">{userName(lead.ownerId)}</td><td className="py-3 text-right"><button type="button" onClick={() => openLead(lead, "lead")} className="ui-button ui-button-secondary">Открыть</button></td></tr>;
+                  })}</tbody>
+                </table>
+              </div>}
+            </Panel>
 
             <div className="grid grid-cols-[1.25fr_.75fr] gap-4 max-xl:grid-cols-1">
               <Panel title="Приоритеты на сегодня" subtitle="Просроченные и ближайшие задачи по реальным лидам.">
@@ -921,13 +1006,18 @@ export function CrmApp() {
                           {overdue && <Badge>просрочено</Badge>}
                           {dueToday && <Badge>сегодня</Badge>}
                           {task.automationKey && <Badge>автоматически</Badge>}
+                          <Badge>{task.taskType ?? "other"}</Badge>
+                          {task.manualOverride && <Badge>ручное переопределение</Badge>}
                         </div>
+                        {task.description && task.description !== task.title && <p className="mt-1 text-sm text-slate-600">{task.description}</p>}
                         <button onClick={() => lead && openLead(lead)} className="mt-1 block truncate text-left text-sm text-slate-600 hover:text-[#4357D9]">
                           {lead?.companyName ?? "Лид удалён"} · {userName(task.ownerId)}
                         </button>
                         <span className={clsx("mt-2 inline-flex items-center gap-1 text-xs font-semibold", overdue ? "text-rose-700" : "text-slate-500")}>
                           <Clock3 size={14} /> {dateLabel(task.dueAt)}
                         </span>
+                        {task.result && <p className="mt-2 text-xs text-slate-600">Результат: {task.result}</p>}
+                        {(task.history ?? []).length > 0 && <span className="ml-2 text-xs text-slate-400">История: {task.history!.length}</span>}
                       </div>
                       {task.status === "open" && (
                         <div className="flex flex-wrap gap-2 max-md:w-full">
@@ -954,11 +1044,14 @@ export function CrmApp() {
                   </button>
                 ))}
               </div>
-              <span className="text-sm text-slate-600">При “Не дозвонились” CRM автоматически ставит перезвоны 1/3/7 дней.</span>
+              <div className="text-right text-sm text-slate-600">
+                <p>При “Не дозвонились” CRM автоматически ставит перезвоны 1/3/7 дней.</p>
+                <p className="mt-1 text-xs">Этап “Подключён” закрывает активную сделку: клиент переходит в Панель управления.</p>
+              </div>
             </div>
             <div className="crm-pipeline-layout">
               <div className="grid auto-cols-[300px] grid-flow-col gap-3 overflow-x-auto pb-3">
-                {STAGES.map((stage, index) => {
+                {STAGES.map((stage, index) => ({ stage, index })).filter(({ index }) => index !== 4).map(({ stage, index }) => {
                   const stageLeads = filteredLeads.filter((lead) => lead.stage === index);
                   return (
                     <div
@@ -981,7 +1074,7 @@ export function CrmApp() {
                         setDraggingLeadId("");
                         if (!lead || lead.stage === index) return;
                         setSelectedLeadId(lead.id);
-                        if (index === 12) {
+                        if (index === 6) {
                           setModal("refusal");
                           return;
                         }
@@ -996,10 +1089,14 @@ export function CrmApp() {
                         {stageLeads.map((lead) => {
                           const isSelected = selectedLeadId === lead.id;
                           const isMoving = movingLeadIds.has(lead.id);
+                          const canManage = currentUser.role === "Руководитель" || currentUser.role === "РОП" || lead.ownerId === currentUser.id;
+                          const leadTasks = state.tasks.filter((task) => task.leadId === lead.id && task.status === "open").sort((a, b) => a.dueAt.localeCompare(b.dueAt));
+                          const isOverdue = leadTasks.some((task) => task.dueAt < todayKey);
+                          const isDueToday = !isOverdue && leadTasks.some((task) => task.dueAt === todayKey);
                           return (
                             <article
                               key={lead.id}
-                              draggable={!isMoving}
+                              draggable={!isMoving && canManage}
                               onDragStart={(event) => {
                                 event.dataTransfer.effectAllowed = "move";
                                 event.dataTransfer.setData("text/plain", lead.id);
@@ -1018,7 +1115,9 @@ export function CrmApp() {
                                 "crm-lead-card",
                                 isSelected && "crm-lead-card-selected",
                                 draggingLeadId === lead.id && "crm-lead-card-dragging",
-                                isMoving && "crm-lead-card-saving"
+                                isMoving && "crm-lead-card-saving",
+                                isOverdue && "crm-lead-card-overdue",
+                                isDueToday && "crm-lead-card-today"
                               )}
                             >
                               <button
@@ -1041,15 +1140,18 @@ export function CrmApp() {
                                 <span className="mt-3 grid gap-1 text-xs leading-5 text-slate-600">
                                   <span className="truncate">{lead.phone}{lead.email && lead.email !== "уточнить" ? ` · ${lead.email}` : ""}</span>
                                   <span className="truncate">{userName(lead.ownerId)} · {lead.sourceChannel}</span>
+                                  <span className="flex flex-wrap gap-1 pt-1">{lead.phone && <span className="ui-badge">Телефон</span>}{lead.telegram && <span className="ui-badge">Telegram</span>}{lead.whatsapp && <span className="ui-badge">WhatsApp</span>}{lead.max && <span className="ui-badge">MAX</span>}</span>
                                 </span>
                               </button>
+                              {leadTasks.length > 0 && <div className="crm-card-tasks"><strong>{isOverdue ? "Просрочено" : isDueToday ? "Сегодня" : "Ближайшие действия"}</strong>{leadTasks.slice(0, 3).map((task) => <span key={task.id}>{task.title} · {dateLabel(task.dueAt)}</span>)}{leadTasks.length > 3 && <small>Ещё {leadTasks.length - 3}</small>}</div>}
+                              {lead.nextStep && <p className="crm-next-action"><span>Следующее действие</span>{lead.nextStep}</p>}
                               <div className="mt-3 flex items-center justify-between gap-2 border-t border-slate-100 pt-3">
                                 <div className="flex items-center gap-1.5">
                                   <span className={clsx("size-2 rounded-full", lead.temperature === "hot" ? "bg-rose-500" : lead.temperature === "warm" ? "bg-amber-500" : "bg-slate-400")} />
                                   <span className="text-xs font-semibold text-slate-600">AI {lead.score}</span>
                                 </div>
                                 <div className="flex gap-1">
-                                  <button
+                                  {canManage && <button
                                     type="button"
                                     aria-label={`Редактировать ${lead.companyName}`}
                                     title="Редактировать"
@@ -1057,7 +1159,7 @@ export function CrmApp() {
                                     className="ui-button ui-button-secondary ui-icon-button min-h-8 size-8"
                                   >
                                     <Pencil size={14} />
-                                  </button>
+                                  </button>}
                                   <button type="button" onClick={() => viewLead(lead)} className="ui-button ui-button-secondary min-h-8 px-2.5 py-1 text-xs">Карточка</button>
                                 </div>
                               </div>
@@ -1105,6 +1207,7 @@ export function CrmApp() {
             userName={userName}
             tariffName={tariffName}
             onOpenPipeline={() => openLead(selectedLead)}
+            onUpdateOperations={(changes) => runAction({ type: "update_lead_operations", payload: { leadId: selectedLead.id, changes } }, "Данные проекта обновлены.")}
           />
         )}
         {activeView === "lead" && !selectedLead && (
@@ -1255,7 +1358,7 @@ export function CrmApp() {
                     <span>{tariffName(subscription.tariffId)}</span>
                     <span>Платеж: {dateLabel(subscription.nextPaymentAt)}</span>
                     <span>Договор до {dateLabel(subscription.endsAt)}</span>
-                    <button onClick={() => lead && openLead(lead)} className="ui-button ui-button-primary">В воронку</button>
+                    <div className="flex flex-wrap gap-2"><button onClick={() => lead && openLead(lead)} className="ui-button ui-button-secondary">Карточка</button>{lead && <button onClick={() => void runAction({ type: "set_scripts_sent", payload: { leadId: lead.id, completed: !lead.scriptsSent, actorId: currentUser.id } }, lead.scriptsSent ? "Отметка снята." : "Отправка скриптов зафиксирована.")} className={clsx("ui-button", lead.scriptsSent ? "ui-button-success" : "ui-button-primary")}>{lead.scriptsSent ? "Скрипты отправлены" : "Отметить скрипты"}</button>}</div>
                   </div>
                 );
               })}
@@ -1278,7 +1381,9 @@ export function CrmApp() {
                 }
               >
                 <div className="grid gap-3">
-                  {state.users.map((user) => (
+                  {state.users.map((user) => {
+                    const appAccess = appAccessFor(user);
+                    return (
                     <article key={user.id} className="rounded-lg border border-[#E5E7EB] bg-white p-4">
                       <div className="flex items-center justify-between gap-3 max-md:flex-col max-md:items-start">
                         <div className="flex items-center gap-3">
@@ -1296,6 +1401,18 @@ export function CrmApp() {
                         <span className="rounded-md bg-slate-50 p-2">{money(metrics.managers.find((item) => item.userId === user.id)?.revenue ?? 0)}</span>
                         <span className="rounded-md bg-slate-50 p-2">{metrics.managers.find((item) => item.userId === user.id)?.conversion ?? 0}% конверсия</span>
                       </div>
+                      {currentUser.role === "Руководитель" && user.role !== "Руководитель" && (
+                        <div className="mt-3 border-t border-slate-100 pt-3">
+                          <span className="text-xs font-semibold text-slate-500">Доступ к приложениям</span>
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            {OS_APPS.map((app) => {
+                              const active = appAccess.includes(app.id);
+                              return <button key={app.id} type="button" onClick={() => void runAction({ type: "update_user_access", payload: { userId: user.id, appPermissions: (active ? appAccess.filter((id) => id !== app.id) : [...appAccess, app.id]) as OsAppId[], autoAssignEnabled: Boolean(user.autoAssignEnabled) } }, "Права сотрудника обновлены.")} className={clsx("ui-button min-h-8 px-2.5 py-1 text-xs", active ? "ui-button-primary" : "ui-button-secondary")}>{app.title}</button>;
+                            })}
+                          </div>
+                          {(user.role === "Менеджер" || user.role === "РОП") && <label className="mt-3 flex items-center gap-2 text-sm font-semibold text-slate-700"><input type="checkbox" checked={Boolean(user.autoAssignEnabled)} onChange={(event) => void runAction({ type: "update_user_access", payload: { userId: user.id, appPermissions: appAccess, autoAssignEnabled: event.target.checked } }, "Настройка распределения обновлена.")} /> Участвует в автоматическом распределении лидов</label>}
+                        </div>
+                      )}
                       <div className="mt-3 flex flex-wrap gap-2">
                         <span className="rounded-md bg-[#EEF1FF] px-3 py-2 text-sm font-semibold text-[#4357D9]">Supabase Auth · персональный пароль</span>
                         {currentUser.role === "Руководитель" && user.id === currentUser.id && (
@@ -1311,7 +1428,8 @@ export function CrmApp() {
                         )}
                       </div>
                     </article>
-                  ))}
+                    );
+                  })}
                 </div>
               </Panel>
 
@@ -1739,7 +1857,7 @@ function PipelineLeadDetail({
   );
 }
 
-function LeadView({ lead, state, userName, tariffName, onOpenPipeline }: { lead: Lead; state: CrmState; userName: (id: string) => string; tariffName: (id?: string) => string; onOpenPipeline: () => void }) {
+function LeadView({ lead, state, userName, tariffName, onOpenPipeline, onUpdateOperations }: { lead: Lead; state: CrmState; userName: (id: string) => string; tariffName: (id?: string) => string; onOpenPipeline: () => void; onUpdateOperations: (changes: Extract<CrmAction, { type: "update_lead_operations" }>["payload"]["changes"]) => void }) {
   const fields = [
     ["Компания", lead.companyName],
     ["Сайт", lead.site],
@@ -1753,6 +1871,10 @@ function LeadView({ lead, state, userName, tariffName, onOpenPipeline }: { lead:
     ["Telegram", lead.telegram],
     ["WhatsApp", lead.whatsapp],
     ["MAX", lead.max],
+    ["Проект", lead.projectName || "не указан"],
+    ["OptiAI Account ID", lead.optiaiAccountId || "не указан"],
+    ["Логин OptiAI", lead.optiaiLogin || "не указан"],
+    ["Предпочтительный канал", lead.preferredChannel || "не указан"],
     ["Есть SEO", lead.hasSeo === null ? "уточнить" : lead.hasSeo ? "да" : "нет"],
     ["Есть контекст", lead.hasContext === null ? "уточнить" : lead.hasContext ? "да" : "нет"],
     ["Маркетолог", lead.hasMarketer === null ? "уточнить" : lead.hasMarketer ? "да" : "нет"],
@@ -1764,6 +1886,7 @@ function LeadView({ lead, state, userName, tariffName, onOpenPipeline }: { lead:
   ];
 
   const activities = state.activities.filter((activity) => activity.leadId === lead.id).slice(0, 8);
+  const documents = (state.clientDocuments ?? []).filter((document) => document.leadId === lead.id);
 
   return (
     <section className="grid gap-4">
@@ -1828,6 +1951,30 @@ function LeadView({ lead, state, userName, tariffName, onOpenPipeline }: { lead:
           </div>
         </Panel>
       </div>
+
+      <Panel title="Проект и аккаунт OptiAI" subtitle="Идентификаторы платформы и отдельные контакты мессенджеров используются для дедупликации и интеграций.">
+        <form className="grid grid-cols-4 gap-3 max-xl:grid-cols-2 max-md:grid-cols-1" onSubmit={(event) => {
+          event.preventDefault();
+          const data = Object.fromEntries(new FormData(event.currentTarget).entries()) as Record<string, string>;
+          onUpdateOperations({ projectName: data.projectName.trim(), optiaiAccountId: data.optiaiAccountId.trim(), optiaiLogin: data.optiaiLogin.trim(), preferredChannel: data.preferredChannel as Lead["preferredChannel"], telegramId: data.telegramId.trim(), maxContact: data.maxContact.trim(), whatsappContact: data.whatsappContact.trim(), substatus: data.substatus ? data.substatus as Lead["substatus"] : null, expectedPaymentAt: data.expectedPaymentAt || null });
+        }}>
+          <FormInput name="projectName" label="Название проекта" defaultValue={lead.projectName ?? ""} />
+          <FormInput name="optiaiAccountId" label="OptiAI Account ID" defaultValue={lead.optiaiAccountId ?? ""} />
+          <FormInput name="optiaiLogin" label="Логин OptiAI" defaultValue={lead.optiaiLogin ?? ""} />
+          <label className="ui-label">Предпочтительный канал<select name="preferredChannel" defaultValue={lead.preferredChannel ?? "phone"} className="ui-field"><option value="phone">Телефон</option><option value="telegram">Telegram</option><option value="whatsapp">WhatsApp</option><option value="max">MAX</option><option value="email">Email</option></select></label>
+          <FormInput name="telegramId" label="Telegram ID" defaultValue={lead.telegramId ?? ""} />
+          <FormInput name="whatsappContact" label="WhatsApp" defaultValue={lead.whatsappContact ?? ""} />
+          <FormInput name="maxContact" label="MAX" defaultValue={lead.maxContact ?? ""} />
+          <label className="ui-label">Подстатус прогрева<select name="substatus" defaultValue={lead.substatus ?? ""} className="ui-field"><option value="">Нет</option><option>Не отвечает</option><option>Отложено</option></select></label>
+          <FormInput name="expectedPaymentAt" label="Ожидаемая дата оплаты" type="date" defaultValue={lead.expectedPaymentAt ?? ""} />
+          <div className="col-span-full"><button className="ui-button ui-button-primary">Сохранить данные проекта</button></div>
+        </form>
+        {(lead.sourceHistory ?? []).length > 0 && <div className="mt-4 border-t border-slate-100 pt-4"><strong className="text-sm">История источников</strong><div className="mt-2 flex flex-wrap gap-2">{lead.sourceHistory!.map((event) => <Badge key={event.id}>{event.source} · {event.eventType} · {dateLabel(event.occurredAt)}</Badge>)}</div></div>}
+      </Panel>
+
+      <Panel title="Счета и документы" subtitle="Документы не создаются отдельно от платформы: CRM показывает только синхронизированные сущности OptiAI.">
+        {documents.length === 0 ? <EmptyState title="Синхронизированных документов нет" text="После подключения API OptiAI здесь появятся реальные счета, договоры и акты со статусами платформы." /> : <div className="overflow-x-auto"><table className="w-full min-w-[720px] text-left text-sm"><thead className="text-xs text-slate-500"><tr><th className="pb-2">Документ</th><th className="pb-2">Тип</th><th className="pb-2">Статус</th><th className="pb-2">Сумма</th><th className="pb-2">Дата</th><th className="pb-2 text-right">Файл</th></tr></thead><tbody>{documents.map((document) => <tr key={document.id} className="border-t border-slate-100"><td className="py-3 font-semibold text-[#202939]">{document.title}</td><td className="py-3">{document.kind === "invoice" ? "Счёт" : document.kind === "act" ? "Акт" : document.kind === "contract" ? "Договор" : "Документ"}</td><td className="py-3"><Badge>{document.status}</Badge></td><td className="py-3">{document.amount === undefined ? "—" : money(document.amount)}</td><td className="py-3">{dateLabel(document.createdAt)}</td><td className="py-3 text-right">{document.fileUrl ? <a href={document.fileUrl} target="_blank" rel="noreferrer" className="ui-button ui-button-secondary">Открыть</a> : <span className="text-xs text-slate-400">нет файла</span>}</td></tr>)}</tbody></table></div>}
+      </Panel>
     </section>
   );
 }
@@ -1917,6 +2064,9 @@ function CallResultForm({
   const options: { id: ManualCallResult; label: string; hint: string; icon: typeof PhoneCall }[] = [
     { id: "answered", label: "Дозвонился", hint: "Перевести к состоявшемуся разговору", icon: CheckCircle2 },
     { id: "no_answer", label: "Не дозвонился", hint: "Поставить перезвоны через 1/3/7 дней", icon: PhoneOff },
+    { id: "busy", label: "Занято", hint: "Зафиксировать попытку и запланировать перезвон", icon: PhoneOff },
+    { id: "invalid_number", label: "Неверный номер", hint: "Создать задачу на проверку контакта", icon: PhoneOff },
+    { id: "other", label: "Другое", hint: "Зафиксировать иной исход звонка", icon: MessageSquareText },
     { id: "meeting", label: "Назначена встреча", hint: "Создать задачу на подготовку", icon: CalendarCheck2 },
     { id: "comment", label: "Только комментарий", hint: "Не менять этап и показатели", icon: MessageSquareText }
   ];
@@ -2010,7 +2160,7 @@ function RescheduleTaskForm({ task, onSubmit, onCancel }: {
 function NewUserForm({ currentUser, submitting, onSubmit }: { currentUser: CrmUser; submitting: boolean; onSubmit: (action: CrmAction) => void | Promise<void> }) {
   const [error, setError] = useState("");
   const allowedRoles: Role[] = currentUser.role === "Руководитель"
-    ? ["Менеджер", "Аккаунт-менеджер", "РОП", "Руководитель"]
+    ? ["Менеджер", "Аккаунт-менеджер", "Технический специалист", "РОП", "Руководитель"]
     : ["Менеджер", "Аккаунт-менеджер"];
 
   function submit(event: FormEvent<HTMLFormElement>) {
@@ -2075,6 +2225,11 @@ function OwnerProfileForm({ user, submitting, onSubmit }: { user: CrmUser; submi
 }
 
 const integrationFieldMap: Record<string, { name: string; label: string; type?: string; placeholder?: string }[]> = {
+  optiai: [
+    { name: "apiUrl", label: "API URL", placeholder: "https://api.optiai.ru" },
+    { name: "apiKey", label: "API Key", type: "password" },
+    { name: "webhookSecret", label: "Webhook Secret", type: "password" }
+  ],
   telegram: [
     { name: "botToken", label: "Bot Token", placeholder: "123456:ABC..." },
     { name: "webhookSecret", label: "Webhook Secret" }

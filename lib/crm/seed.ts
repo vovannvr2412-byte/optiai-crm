@@ -3,8 +3,7 @@ import type { Activity, CallRecord, CrmState, CrmTask, CrmUser, Integration, Lea
 const now = "2026-06-25T00:00:00.000Z";
 
 export const seedUsers: CrmUser[] = [
-  { id: "u-owner", fullName: "Владимир Орлов", email: "owner@optiai.ru", role: "Руководитель", position: "CEO OptiAI", status: "active", calls: 0, meetings: 0, revenue: 0, conversion: 0, createdAt: now },
-  { id: "u-rop", fullName: "Екатерина Нечаева", email: "rop@optiai.ru", role: "РОП", position: "Руководитель отдела продаж", status: "active", calls: 0, meetings: 0, revenue: 0, conversion: 0, createdAt: now }
+  { id: "u-owner", fullName: "Руководитель OptiAI", email: "owner@optiai.ru", role: "Руководитель", position: "Руководитель", status: "active", calls: 0, meetings: 0, revenue: 0, conversion: 0, createdAt: now }
 ];
 
 export const seedTariffs: Tariff[] = [
@@ -45,7 +44,8 @@ export const seedIntegrations: Integration[] = [
   { id: "metrika", name: "Яндекс Метрика", description: "Посещения сайта и конверсии", status: "needs_setup" },
   { id: "ai", name: "AI-ассистент", description: "Анализ звонков, автоматические ответы и персонализация прогревов", status: "needs_setup" },
   { id: "robokassa", name: "RoboKassa", description: "Оплаты подписок", status: "needs_setup" },
-  { id: "sip", name: "SIP-телефония", description: "Звонки, записи, автодозвон", status: "needs_setup" }
+  { id: "sip", name: "SIP-телефония", description: "Звонки, записи, автодозвон", status: "needs_setup" },
+  { id: "optiai", name: "Платформа OptiAI", description: "Регистрации, проекты, оплаты и подписки через API/webhook", status: "needs_setup" }
 ];
 
 export function createSeedState(): CrmState {

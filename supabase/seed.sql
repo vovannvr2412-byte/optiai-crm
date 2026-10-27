@@ -21,8 +21,7 @@ insert into public.pipeline_stages (stage_order, name, requires_refusal_reason, 
 on conflict (stage_order) do nothing;
 
 insert into public.crm_users (id, full_name, email, role, position, calls, meetings, revenue, conversion) values
-('20000000-0000-0000-0000-000000000001', 'Владимир Орлов', 'owner@optiai.ru', 'Руководитель', 'CEO OptiAI', 0, 0, 0, 0),
-('20000000-0000-0000-0000-000000000002', 'Екатерина Нечаева', 'rop@optiai.ru', 'РОП', 'Руководитель отдела продаж', 0, 0, 0, 0)
+('20000000-0000-0000-0000-000000000001', 'Руководитель OptiAI', 'owner@optiai.ru', 'Руководитель', 'Руководитель', 0, 0, 0, 0)
 on conflict (email) do update set
   calls = excluded.calls,
   meetings = excluded.meetings,
