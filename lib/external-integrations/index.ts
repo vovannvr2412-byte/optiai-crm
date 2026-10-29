@@ -3,6 +3,7 @@ import { createServiceSupabaseClient } from "@/lib/supabase/server";
 import { applyCrmActionsAsync, getCrmStateAsync, setIntegrationStatusAsync, supabasePersistenceEnabled } from "@/lib/crm/store";
 import { getIntegrationSecrets, getIntegrationSecretPresence, saveIntegrationSecrets } from "@/lib/integrations/secrets";
 import { STAGES, type CrmAction, type CrmUser, type Lead } from "@/lib/crm/types";
+import { moscowDateTimeIso } from "@/lib/time/moscow";
 
 export const externalIntegrationDefinitions = {
   sheets: {
@@ -173,7 +174,7 @@ async function importSheetRows(values: unknown[][]) {
     const crmId = cell("CRM_ID");
     const existing = state.leads.find((lead) => lead.id === crmId) ?? state.leads.find((lead) => lead.phone === phone);
     const owner = state.users.find((user) => user.email.toLowerCase() === cell("Ответственный email").toLowerCase() && user.status === "active")
-      ?? state.users.find((user) => user.status === "active" && (user.role === "Менеджер" || user.role === "РОП" || user.role === "Руководитель"));
+      ?? state.users.find((user) => user.status === "active" && (user.role === "Менеджер по продажам" || user.role === "Руководитель"));
     if (!owner) throw new Error("В CRM нет активного сотрудника для назначения импортируемых лидов.");
     const stageName = cell("Этап");
     const stage = Math.max(0, STAGES.findIndex((item) => item === stageName));
@@ -274,7 +275,7 @@ async function syncYandexMetrika() {
       const lead = state.leads.find((item) => item.id === payment.leadId);
       if (!lead) throw new Error(`Для платежа ${payment.id} не найден лид.`);
       const userId = identifierSource === "email" ? lead.email : identifierSource === "phone" ? lead.phone : lead.id;
-      const timestamp = Math.floor(Date.parse(`${payment.paidAt}T12:00:00Z`) / 1000);
+      const timestamp = Math.floor(Date.parse(moscowDateTimeIso(payment.paidAt, "12:00")) / 1000);
       return [csv(userId), csv(goalId), timestamp, payment.amount, "RUB"].join(",");
     });
     const form = new FormData();

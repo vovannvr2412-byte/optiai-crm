@@ -8,6 +8,7 @@ import { createNotification } from "@/lib/notifications/store";
 import { createServiceSupabaseClient } from "@/lib/supabase/server";
 import { syncScheduledExternalIntegrations } from "@/lib/external-integrations";
 import { personalizeWarmupMessage } from "@/lib/ai/service";
+import { addCalendarDays, daysBetweenCalendarDates, moscowDateKey, moscowDateTimeIso } from "@/lib/time/moscow";
 import { assignWarmupSequence } from "./warmup";
 
 type SchedulerStats = {
@@ -31,21 +32,19 @@ export type AutomationStatus = {
 type ClaimedEvent = { id: string; attempts: number };
 
 function dateOnly(value = new Date()) {
-  return value.toISOString().slice(0, 10);
+  return moscowDateKey(value);
 }
 
 function addDays(value: string, days: number) {
-  const date = new Date(`${value.slice(0, 10)}T00:00:00Z`);
-  date.setUTCDate(date.getUTCDate() + days);
-  return dateOnly(date);
+  return addCalendarDays(value, days);
 }
 
 function daysBetween(from: string, to: string) {
-  return Math.floor((Date.parse(`${to.slice(0, 10)}T00:00:00Z`) - Date.parse(`${from.slice(0, 10)}T00:00:00Z`)) / 86_400_000);
+  return daysBetweenCalendarDates(from, to);
 }
 
 function scheduledTime(day: string) {
-  return `${day.slice(0, 10)}T06:00:00.000Z`;
+  return moscowDateTimeIso(day, "09:00");
 }
 
 function cleanError(error: unknown) {
@@ -200,7 +199,11 @@ async function runNoResponseAutomations(stats: SchedulerStats) {
             due_at: today,
             priority: "high",
             status: "open",
-            automation_key: eventKey
+            automation_key: eventKey,
+            task_type: "call",
+            description: "Связаться с лидом вручную после семи дней без ответа.",
+            source: "automation",
+            history: [{ at: new Date().toISOString(), action: "created", detail: eventKey }]
           });
           if (error) throw error;
           const { error: activityError } = await supabase.from("activities").insert({
@@ -273,7 +276,7 @@ async function runWarmupSteps(stats: SchedulerStats) {
       payload: { assignmentId: assignment.id, sequenceId: sequence.id, stepId: dueStep.id, day: dueStep.day }
     }, stats, async () => {
       const { data: overriddenTask, error: overrideError } = await supabase.from("tasks")
-        .select("manual_override")
+        .select("id,manual_override,history")
         .eq("lead_id", lead.id)
         .eq("automation_key", `warmup:${sequence.id}:${dueStep.id}`)
         .eq("status", "open")
@@ -297,11 +300,15 @@ async function runWarmupSteps(stats: SchedulerStats) {
         console.error("AI warmup personalization failed; using authored template", { leadId: lead.id, stepId: dueStep.id, error: cleanError(error) });
       }
       await sendAutomatedMessage({ lead, text: message, idempotencyKey: eventKey, attachment, conversation });
-      const { error: taskError } = await supabase.from("tasks").update({ status: "done" })
-        .eq("lead_id", lead.id)
-        .eq("automation_key", `warmup:${sequence.id}:${dueStep.id}`)
-        .eq("status", "open");
-      if (taskError) throw taskError;
+      if (overriddenTask?.id) {
+        const history = Array.isArray(overriddenTask.history) ? overriddenTask.history : [];
+        const { error: taskError } = await supabase.from("tasks").update({
+          status: "done",
+          result: "Сообщение отправлено системой",
+          history: [...history, { at: new Date().toISOString(), action: "completed", detail: "Автоматически отправлено системой" }]
+        }).eq("id", overriddenTask.id);
+        if (taskError) throw taskError;
+      }
       await createNotification({
         userId: lead.ownerId,
         leadId: lead.id,

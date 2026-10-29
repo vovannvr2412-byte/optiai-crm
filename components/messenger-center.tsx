@@ -6,6 +6,7 @@ import { AlertCircle, ArrowLeft, Bot, Check, CheckCheck, Clock3, Film, ImageIcon
 import { STAGES, type CrmState, type CrmUser } from "@/lib/crm/types";
 import type { MessengerChannel, MessengerConversation, MessengerMessage, OutgoingMediaAttachment } from "@/lib/messaging/types";
 import { uploadMediaFile, type UploadedMedia } from "@/lib/media/client";
+import { formatMoscowDate } from "@/lib/time/moscow";
 
 type Props = {
   state: CrmState;
@@ -18,11 +19,11 @@ const channelNames: Record<MessengerChannel, string> = { telegram: "Telegram", w
 const channelMarks: Record<MessengerChannel, string> = { telegram: "TG", whatsapp: "WA", max: "MAX", instagram: "IG", avito: "AV" };
 
 function fullDate(value: string) {
-  return new Intl.DateTimeFormat("ru-RU", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }).format(new Date(value));
+  return formatMoscowDate(value, { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
 }
 
 function time(value: string) {
-  return new Intl.DateTimeFormat("ru-RU", { hour: "2-digit", minute: "2-digit" }).format(new Date(value));
+  return formatMoscowDate(value, { hour: "2-digit", minute: "2-digit" });
 }
 
 function initials(name: string) {
@@ -72,7 +73,7 @@ export function MessengerCenter({ state, currentUser, onOpenLead, onCreateLead }
   const selected = conversations.find((item) => item.id === selectedId);
   const linkedLead = selected?.leadId ? state.leads.find((item) => item.id === selected.leadId) : undefined;
   const owner = linkedLead ? state.users.find((item) => item.id === linkedLead.ownerId) : selected?.ownerId ? state.users.find((item) => item.id === selected.ownerId) : undefined;
-  const canAssign = currentUser.role === "Руководитель" || currentUser.role === "РОП";
+  const canAssign = currentUser.role === "Руководитель";
   const warmupSteps = useMemo(() => state.warmupSequences.flatMap((sequence) => sequence.steps.map((step) => ({ ...step, sequenceName: sequence.name }))).sort((a, b) => a.day - b.day || a.title.localeCompare(b.title, "ru")), [state.warmupSequences]);
 
   const loadConversations = useCallback(async (quiet = false, search = "") => {

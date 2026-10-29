@@ -37,7 +37,7 @@ export async function setTelegramWebhook(botToken: string, webhookUrl: string, w
     body: JSON.stringify({
       url: webhookUrl,
       secret_token: webhookSecret,
-      allowed_updates: ["message", "edited_message"],
+      allowed_updates: ["message", "edited_message", "callback_query"],
       drop_pending_updates: false
     })
   }));
@@ -151,18 +151,24 @@ export const telegramAdapter: ProviderAdapter = {
   },
   normalizeWebhook(payload) {
     const update = asRecord(payload);
-    const message = asRecord(update?.message) ?? asRecord(update?.edited_message);
+    const callback = asRecord(update?.callback_query);
+    const message = asRecord(callback?.message) ?? asRecord(update?.message) ?? asRecord(update?.edited_message);
     const eventId = asString(update?.update_id);
     if (!message || !eventId) return [];
     const chat = asRecord(message.chat);
-    const sender = asRecord(message.from);
+    const sender = asRecord(callback?.from) ?? asRecord(message.from);
+    const contact = asRecord(message.contact);
     const externalConversationId = asString(chat?.id);
-    const externalMessageId = asString(message.message_id);
+    const callbackId = asString(callback?.id);
+    const callbackData = asString(callback?.data);
+    const externalMessageId = callbackId ? `callback:${callbackId}` : asString(message.message_id);
     if (!externalConversationId || !externalMessageId) return [];
     const firstName = asString(sender?.first_name);
     const lastName = asString(sender?.last_name);
     const username = asString(sender?.username);
-    const parsed = content(message);
+    const parsed = callbackData
+      ? { text: callbackData === "manager_call_requested" ? "Запросить звонок менеджера" : callbackData, contentType: "text" as const, attachments: [] }
+      : content(message);
     return [{
       channel: "telegram",
       connectionId: "telegram",
@@ -171,12 +177,13 @@ export const telegramAdapter: ProviderAdapter = {
       externalContactId: asString(sender?.id) || externalConversationId,
       externalMessageId,
       contactName: [firstName, lastName].filter(Boolean).join(" ") || (username ? `@${username}` : "Контакт Telegram"),
+      phone: asString(contact?.phone_number) || undefined,
       username: username ? `@${username}` : undefined,
       text: parsed.text,
       sentAt: unixSecondsToIso(message.date),
       contentType: parsed.contentType,
       attachments: parsed.attachments,
-      metadata: { updateId: eventId, chatType: asString(chat?.type) || null }
+      metadata: { updateId: eventId, chatType: asString(chat?.type) || null, callbackData: callbackData || null }
     }];
   }
 };

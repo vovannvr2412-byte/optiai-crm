@@ -21,7 +21,7 @@ async function notificationRecipients(conversation: MessengerConversation) {
   const ownerId = lead?.ownerId || conversation.ownerId;
   const recipients = ownerId
     ? state.users.filter((user) => user.id === ownerId && user.status === "active")
-    : state.users.filter((user) => user.status === "active" && (user.role === "Руководитель" || user.role === "РОП"));
+    : state.users.filter((user) => user.status === "active" && user.role === "Руководитель");
   return { state, lead, recipients };
 }
 

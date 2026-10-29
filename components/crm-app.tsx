@@ -5,33 +5,22 @@ import Link from "next/link";
 import clsx from "clsx";
 import {
   Bell,
-  ArrowLeft,
-  Bot,
-  BriefcaseBusiness,
   CalendarCheck2,
   CalendarClock,
   CheckCircle2,
-  CheckSquare2,
   Clock3,
-  Flame,
   Film,
   ImageIcon,
-  KeyRound,
-  LayoutDashboard,
-  LogOut,
   MessageSquareText,
-  MessagesSquare,
   Pencil,
   PhoneCall,
   PhoneOff,
   Plus,
   Search,
-  ShieldCheck,
   Trash2,
-  UsersRound,
   X
 } from "lucide-react";
-import { ROLE_PERMISSIONS, STAGES, VIEW_TITLES, type CrmAction, type CrmState, type CrmUser, type DashboardMetrics, type Lead, type ManualCallResult, type OsAppId, type Role, type SalesPeriodMetrics, type ViewId } from "@/lib/crm/types";
+import { normalizeRole, ROLE_PERMISSIONS, STAGES, VIEW_TITLES, type CrmAction, type CrmState, type CrmTask, type CrmUser, type DashboardMetrics, type Lead, type ManualCallResult, type OsAppId, type Role, type SalesPeriodMetrics, type ViewId } from "@/lib/crm/types";
 import { MessengerCenter } from "@/components/messenger-center";
 import type { MessengerChannel, MessengerConnection } from "@/lib/messaging/types";
 import { uploadMediaFile } from "@/lib/media/client";
@@ -40,7 +29,11 @@ import type { CrmNotification } from "@/lib/notifications/store";
 import type { AutomationStatus } from "@/lib/automations/scheduler";
 import { readApiJson, readApiJsonOrNull } from "@/lib/api/client";
 import type { AiConfigurationSummary } from "@/lib/ai/types";
-import { OS_APPS, appAccessFor } from "@/lib/os/apps";
+import { appAccessFor, configurableAppsFor } from "@/lib/os/apps";
+import { WorkspaceSidebar } from "@/components/crm/workspace-sidebar";
+import { Badge, EmptyState, Panel, WorkspaceLoading } from "@/components/crm/ui";
+import { OptiaiLogo } from "@/components/brand/optiai-logo";
+import { formatMoscowDate, moscowDateKey, moscowMonthEndDateKey, moscowMonthStartDateKey, moscowWeekStartDateKey } from "@/lib/time/moscow";
 
 type Bootstrap = {
   currentUser: CrmUser;
@@ -93,26 +86,11 @@ const auditActionLabels: Record<string, string> = {
   "ai.call_analyzed": "Звонок проанализирован AI"
 };
 
-type Modal = "newUser" | "ownerProfile" | "newLead" | "editLead" | "deleteLead" | "warmupSequence" | "warmupStep" | "assignWarmup" | "refusal" | "integration" | "password" | "rescheduleTask" | "callResult" | null;
-
-const navItems: { id: ViewId; icon: typeof LayoutDashboard }[] = [
-  { id: "dashboard", icon: LayoutDashboard },
-  { id: "tasks", icon: CheckSquare2 },
-  { id: "pipeline", icon: BriefcaseBusiness },
-  { id: "messengers", icon: MessagesSquare },
-  { id: "lead", icon: ShieldCheck },
-  { id: "callcenter", icon: PhoneCall },
-  { id: "warmup", icon: Flame },
-  { id: "subscriptions", icon: CalendarClock },
-  { id: "team", icon: UsersRound },
-  { id: "automations", icon: Bot }
-];
+type Modal = "newUser" | "ownerProfile" | "newLead" | "editLead" | "deleteLead" | "warmupSequence" | "warmupStep" | "assignWarmup" | "refusal" | "integration" | "password" | "rescheduleTask" | "taskDetails" | "callResult" | null;
 
 const roleDescriptions: Record<Role, string> = {
   Руководитель: "Полный доступ ко всем данным, деньгам, команде и интеграциям.",
-  РОП: "Управляет продажами, командой, воронкой и прогнозом.",
-  Менеджер: "Видит общую базу лидов, а изменяет назначенные ему сделки, задачи и прогревы.",
-  "Аккаунт-менеджер": "Видит действующих клиентов, продления и удержание.",
+  "Менеджер по продажам": "Видит общую базу лидов, а изменяет назначенные ему сделки, задачи и прогревы.",
   "Технический специалист": "Работает с лидами, подключениями и техническими настройками."
 };
 
@@ -145,7 +123,26 @@ function money(value: number) {
 
 function dateLabel(value?: string) {
   if (!value) return "нет данных";
-  return new Intl.DateTimeFormat("ru-RU", { day: "2-digit", month: "short" }).format(new Date(value));
+  return formatMoscowDate(value, { day: "2-digit", month: "short" });
+}
+
+function taskDueLabel(task: CrmTask) {
+  const date = formatMoscowDate(task.dueAt, { day: "2-digit", month: "short", year: "numeric" });
+  return task.dueTime ? `${date}, ${task.dueTime.slice(0, 5)}` : date;
+}
+
+function taskTimeLabel(task: CrmTask) {
+  return task.dueTime?.slice(0, 5) || "в течение дня";
+}
+
+function taskHistoryDate(value: string) {
+  const hasTime = value.includes("T");
+  return formatMoscowDate(value, {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    ...(hasTime ? { hour: "2-digit", minute: "2-digit" } : {})
+  });
 }
 
 function initials(name: string) {
@@ -198,7 +195,7 @@ const modeApp = { leads: "leads", management: "management", settings: "settings"
 const modeTitle = { leads: "Лиды CRM", management: "Панель управления", settings: "Настройки", team: "Команда" } as const;
 
 export function CrmApp({ mode = "leads" }: { mode?: CrmAppMode }) {
-  const [referenceNow] = useState(() => Date.now());
+  const [referenceDateKey] = useState(() => moscowDateKey());
   const [bootstrap, setBootstrap] = useState<Bootstrap | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
   const [activeView, setActiveView] = useState<ViewId>("dashboard");
@@ -451,9 +448,9 @@ export function CrmApp({ mode = "leads" }: { mode?: CrmAppMode }) {
   const currentUser = bootstrap?.currentUser;
   const allowedViews = (currentUser ? ROLE_PERMISSIONS[currentUser.role] : ROLE_PERMISSIONS["Руководитель"])
     .filter((view) => modeViews[mode].includes(view));
-  const canCreateUsers = currentUser?.role === "Руководитель" || currentUser?.role === "РОП";
-  const canCreateLeads = currentUser ? currentUser.role === "Руководитель" || currentUser.role === "РОП" || currentUser.role === "Менеджер" : false;
-  const canDeleteLeads = currentUser?.role === "Руководитель" || currentUser?.role === "РОП";
+  const canCreateUsers = currentUser?.role === "Руководитель";
+  const canCreateLeads = currentUser ? currentUser.role === "Руководитель" || currentUser.role === "Менеджер по продажам" : false;
+  const canDeleteLeads = currentUser?.role === "Руководитель";
   const unreadNotifications = (bootstrap?.notifications ?? []).filter((item) => !item.readAt);
 
   useEffect(() => {
@@ -462,6 +459,7 @@ export function CrmApp({ mode = "leads" }: { mode?: CrmAppMode }) {
   }, [selectedLeadId]);
 
   const selectedLead = useMemo(() => state?.leads.find((lead) => lead.id === selectedLeadId), [selectedLeadId, state?.leads]);
+  const selectedTask = useMemo(() => state?.tasks.find((task) => task.id === selectedTaskId), [selectedTaskId, state?.tasks]);
 
   const filteredLeads = useMemo(() => {
     const value = query.trim().toLowerCase();
@@ -539,11 +537,7 @@ export function CrmApp({ mode = "leads" }: { mode?: CrmAppMode }) {
   }, [filteredLeads, managementClientFilter, state?.payments, state?.subscriptions]);
 
   if (!authChecked) {
-    return (
-      <main className="grid min-h-screen place-items-center text-neutral-900">
-        <div className="rounded-lg border border-[#E5E7EB] bg-white p-6 text-sm font-semibold text-slate-600">Загружаем OptiAI CRM...</div>
-      </main>
-    );
+    return <WorkspaceLoading />;
   }
 
   if (!bootstrap || !state || !metrics || !currentUser) {
@@ -596,7 +590,7 @@ export function CrmApp({ mode = "leads" }: { mode?: CrmAppMode }) {
 
   function renderPipelineActions(lead: Lead) {
     if (!state || !currentUser) return null;
-    if (currentUser.role !== "Руководитель" && currentUser.role !== "РОП" && lead.ownerId !== currentUser.id) {
+    if (currentUser.role !== "Руководитель" && lead.ownerId !== currentUser.id) {
       return <span className="ui-badge">Просмотр · отвечает {userName(lead.ownerId)}</span>;
     }
 
@@ -654,23 +648,20 @@ export function CrmApp({ mode = "leads" }: { mode?: CrmAppMode }) {
     return <span className="ui-badge">Этап завершён</span>;
   }
 
-  const managementStart = (() => {
-    const now = new Date();
-    if (managementPeriod === "today") return new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-    if (managementPeriod === "month") return new Date(now.getFullYear(), now.getMonth(), 1).getTime();
-    const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    start.setDate(start.getDate() - (start.getDay() || 7) + 1);
-    return start.getTime();
-  })();
-  const periodPayments = state?.payments.filter((payment) => payment.status === "paid" && Date.parse(`${payment.paidAt.slice(0, 10)}T00:00:00`) >= managementStart) ?? [];
+  const managementStart = managementPeriod === "today"
+    ? referenceDateKey
+    : managementPeriod === "month"
+      ? moscowMonthStartDateKey(referenceDateKey)
+      : moscowWeekStartDateKey(referenceDateKey);
+  const periodPayments = state?.payments.filter((payment) => payment.status === "paid" && moscowDateKey(payment.paidAt) >= managementStart) ?? [];
   const firstPaymentByLead = new Map<string, string>();
   (state?.payments ?? []).filter((payment) => payment.status === "paid").forEach((payment) => { const previous = firstPaymentByLead.get(payment.leadId); if (!previous || payment.paidAt < previous) firstPaymentByLead.set(payment.leadId, payment.paidAt); });
   const activeSubscriptions = state?.subscriptions.filter((item) => item.status === "active") ?? [];
-  const monthEnd = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0, 23, 59, 59).getTime();
-  const potentialForecast = activeSubscriptions.filter((subscription) => { const due = Date.parse(subscription.nextPaymentAt); return due >= referenceNow && due <= monthEnd; }).reduce((sum, subscription) => sum + (state?.tariffs.find((tariff) => tariff.id === subscription.tariffId)?.price ?? 0), 0);
+  const monthEnd = moscowMonthEndDateKey(referenceDateKey);
+  const potentialForecast = activeSubscriptions.filter((subscription) => { const due = moscowDateKey(subscription.nextPaymentAt); return due >= referenceDateKey && due <= monthEnd; }).reduce((sum, subscription) => sum + (state?.tariffs.find((tariff) => tariff.id === subscription.tariffId)?.price ?? 0), 0);
   const dashboardCards = [
     ["Активные клиенты", activeSubscriptions.length.toString(), "действующие оплаченные подписки"],
-    ["Новые клиенты", [...firstPaymentByLead.values()].filter((date) => Date.parse(`${date.slice(0, 10)}T00:00:00`) >= managementStart).length.toString(), "первая оплата за период"],
+    ["Новые клиенты", [...firstPaymentByLead.values()].filter((date) => moscowDateKey(date) >= managementStart).length.toString(), "первая оплата за период"],
     ["Потерянные клиенты", (state?.subscriptions.filter((item) => item.status === "cancelled").length ?? 0).toString(), "подписка завершена без продления"],
     ["Оплаты", periodPayments.length.toString(), `${money(periodPayments.reduce((sum, payment) => sum + payment.amount, 0))} за период`],
     ["Churn", `${metrics.churn}%`, "потерянные относительно клиентской базы"],
@@ -679,70 +670,32 @@ export function CrmApp({ mode = "leads" }: { mode?: CrmAppMode }) {
     ["Потенциальный прогноз", money(potentialForecast), "ожидаемые продления до конца месяца"]
   ];
   const maxChannelLeads = Math.max(1, ...metrics.channels.map((channel) => channel.leads));
-  const todayKey = new Date().toISOString().slice(0, 10);
+  const todayKey = moscowDateKey();
   const visibleTasks = [...state.tasks]
     .filter((task) => task.status === taskFilter)
-    .sort((a, b) => a.dueAt.localeCompare(b.dueAt) || a.title.localeCompare(b.title, "ru"));
+    .sort((a, b) => a.dueAt.localeCompare(b.dueAt) || (a.dueTime ?? "23:59").localeCompare(b.dueTime ?? "23:59") || a.title.localeCompare(b.title, "ru"));
 
   return (
     <div className="crm-shell">
-      <aside className="crm-sidebar">
-        <div className="mb-6 flex items-center gap-2 px-1 max-lg:justify-center">
-          <Link href="/" className="crm-home-link" aria-label="К приложениям" title="К приложениям"><ArrowLeft size={17} /></Link>
-          <div className="crm-brand-mark">OA</div>
-          <div className="max-lg:hidden">
-            <strong className="block text-sm">{modeTitle[mode]}</strong>
-            <span className="text-xs text-slate-400">OptiAI Operations OS</span>
-          </div>
-        </div>
-
-        <nav className="crm-nav" aria-label="Основная навигация">
-          {navItems
-            .filter((item) => allowedViews.includes(item.id))
-            .map(({ id, icon: Icon }) => (
-              <button
-                key={id}
-                onClick={() => {
-                  setNotificationsOpen(false);
-                  setActiveView(id);
-                }}
-                className={clsx("crm-nav-item", activeView === id && "crm-nav-item-active")}
-                title={VIEW_TITLES[id]}
-              >
-                <Icon size={20} />
-                <span className="max-lg:hidden">{VIEW_TITLES[id]}</span>
-              </button>
-            ))}
-        </nav>
-
-        <div className="crm-account-footer">
-          <div className="max-lg:hidden">
-            <span className="text-xs text-slate-400">Текущий аккаунт</span>
-            <strong className="mt-1 block truncate text-sm text-white">{currentUser.fullName}</strong>
-            <span className="block truncate text-xs text-slate-400">{currentUser.email}</span>
-            <span className="mt-2 inline-flex rounded-md bg-white/10 px-2 py-1 text-xs font-semibold text-slate-200">{currentUser.role}</span>
-            <p className="mt-3 text-xs leading-5 text-slate-400">{roleDescriptions[currentUser.role]}</p>
-          </div>
-          <button onClick={() => setModal("password")} className="crm-logout" aria-label="Сменить пароль">
-            <KeyRound size={17} /> <span>Сменить пароль</span>
-          </button>
-          <button
-            type="button"
-            aria-label="Выйти из аккаунта"
-            onClick={() => void logout()}
-            disabled={loggingOut}
-            className="crm-logout"
-          >
-            <LogOut size={17} /> <span>{loggingOut ? "Выходим..." : "Выйти"}</span>
-          </button>
-        </div>
-      </aside>
+      <WorkspaceSidebar
+        moduleTitle={modeTitle[mode]}
+        currentUser={currentUser}
+        allowedViews={allowedViews}
+        activeView={activeView}
+        loggingOut={loggingOut}
+        onNavigate={(view) => {
+          setNotificationsOpen(false);
+          setActiveView(view);
+        }}
+        onChangePassword={() => setModal("password")}
+        onLogout={() => void logout()}
+      />
 
       <main className="crm-main">
-        <header className="crm-topbar mb-6 max-xl:items-start max-xl:flex-col">
-          <div>
-            <p className="text-xs font-semibold text-slate-500">{modeTitle[mode]} / {VIEW_TITLES[activeView]}</p>
-            <h1 className="mt-1 text-2xl font-bold text-[#202939]">{VIEW_TITLES[activeView]}</h1>
+        <header className="crm-topbar">
+          <div className="crm-page-heading">
+            <p>{modeTitle[mode]}</p>
+            <h1>{VIEW_TITLES[activeView]}</h1>
           </div>
 
           <div className="flex flex-wrap items-center justify-end gap-2">
@@ -821,7 +774,7 @@ export function CrmApp({ mode = "leads" }: { mode?: CrmAppMode }) {
                       >
                         <strong className="block text-sm text-[#202939]">{notification.title}</strong>
                         <span className="mt-0.5 block text-xs leading-5 text-slate-600">{notification.body}</span>
-                        <time className="mt-1 block text-[11px] text-slate-400">{new Date(notification.createdAt).toLocaleString("ru-RU")}</time>
+                        <time className="mt-1 block text-[11px] text-slate-400">{formatMoscowDate(notification.createdAt, { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })}</time>
                       </button>
                     ))}
                   </div>
@@ -849,14 +802,14 @@ export function CrmApp({ mode = "leads" }: { mode?: CrmAppMode }) {
         </header>
 
         {activeView === "dashboard" && (
-          <section className="grid gap-4">
+          <section className="crm-view-stack">
             <div className="flex flex-wrap items-end justify-between gap-3">
               <div><h2 className="text-lg font-bold text-[#202939]">Работа с продажами</h2><p className="mt-1 text-sm text-slate-600">Только лиды, состоявшиеся телефонные контакты и первые оплаченные сделки.</p></div>
               <div className="grid grid-cols-3 rounded-lg border border-[#E5E7EB] bg-white p-1">
                 {(["today", "week", "month"] as const).map((period) => <button key={period} onClick={() => setSalesPeriod(period)} className={clsx("rounded-md px-3 py-2 text-xs font-semibold", salesPeriod === period ? "bg-[#EEF1FF] text-[#4357D9]" : "text-slate-600")}>{period === "today" ? "Сегодня" : period === "week" ? "Неделя" : "Месяц"}</button>)}
               </div>
             </div>
-            <div className="grid grid-cols-3 gap-3 max-md:grid-cols-1">
+            <div className="crm-metric-strip">
               <article className="crm-kpi"><span className="text-xs font-semibold text-slate-500">Новые лиды</span><strong className="mt-2 block text-2xl font-bold tabular-nums">{bootstrap.salesMetrics[salesPeriod].leads}</strong><small className="mt-1 block text-xs text-slate-500">созданы за выбранный период</small></article>
               <article className="crm-kpi"><span className="text-xs font-semibold text-slate-500">Фактические контакты</span><strong className="mt-2 block text-2xl font-bold tabular-nums">{bootstrap.salesMetrics[salesPeriod].actualContacts}</strong><small className="mt-1 block text-xs text-slate-500">только состоявшиеся разговоры</small></article>
               <article className="crm-kpi"><span className="text-xs font-semibold text-slate-500">Первые оплаты</span><strong className="mt-2 block text-2xl font-bold tabular-nums">{bootstrap.salesMetrics[salesPeriod].firstPaidDeals}</strong><small className="mt-1 block text-xs text-slate-500">новые оплаченные сделки</small></article>
@@ -864,9 +817,9 @@ export function CrmApp({ mode = "leads" }: { mode?: CrmAppMode }) {
             <Panel title="Мои задачи на сегодня" subtitle="Просроченные задачи и действия с дедлайном сегодня.">
               <div className="grid gap-2">
                 {state.tasks.filter((task) => task.ownerId === currentUser.id && task.status === "open" && task.dueAt <= todayKey).length === 0 && <EmptyState title="На сегодня задач нет" text="Новые задачи появятся из воронки, прогревов и автоматизаций." />}
-                {state.tasks.filter((task) => task.ownerId === currentUser.id && task.status === "open" && task.dueAt <= todayKey).sort((a, b) => a.dueAt.localeCompare(b.dueAt)).slice(0, 8).map((task) => {
+                {state.tasks.filter((task) => task.ownerId === currentUser.id && task.status === "open" && task.dueAt <= todayKey).sort((a, b) => a.dueAt.localeCompare(b.dueAt) || (a.dueTime ?? "23:59").localeCompare(b.dueTime ?? "23:59")).slice(0, 8).map((task) => {
                   const lead = state.leads.find((item) => item.id === task.leadId);
-                  return <button key={task.id} onClick={() => lead && openLead(lead)} className={clsx("rounded-lg border p-3 text-left", task.dueAt < todayKey ? "border-rose-300 bg-rose-50" : "border-[#E5E7EB] bg-[#F8FAFC]")}><strong className="block text-[#202939]">{task.title}</strong><span className="mt-1 block text-xs text-slate-600">{lead?.companyName ?? "Лид"} · {task.dueAt < todayKey ? "Просрочено" : "Сегодня"}</span></button>;
+                  return <button key={task.id} onClick={() => { setSelectedTaskId(task.id); setModal("taskDetails"); }} className={clsx("rounded-lg border p-3 text-left", task.dueAt < todayKey ? "border-rose-300 bg-rose-50" : "border-[#E5E7EB] bg-[#F8FAFC]")}><strong className="block text-[#202939]">{task.title}</strong><span className="mt-1 block text-xs text-slate-600">{lead?.companyName ?? "Лид"} · {task.dueAt < todayKey ? "Просрочено" : "Сегодня"} · {taskTimeLabel(task)}</span></button>;
                 })}
               </div>
             </Panel>
@@ -874,9 +827,9 @@ export function CrmApp({ mode = "leads" }: { mode?: CrmAppMode }) {
         )}
 
         {activeView === "management" && (
-          <section className="grid gap-4">
+          <section className="crm-view-stack">
             <div className="flex flex-wrap items-end justify-between gap-3"><div><h2 className="text-lg font-bold">Состояние клиентской базы</h2><p className="mt-1 text-sm text-slate-600">Метрики рассчитаны только по фактическим данным CRM и OptiAI.</p></div><div className="grid grid-cols-3 rounded-lg border border-[#E5E7EB] bg-white p-1">{(["today", "week", "month"] as const).map((period) => <button key={period} onClick={() => setManagementPeriod(period)} className={clsx("rounded-md px-3 py-2 text-xs font-semibold", managementPeriod === period ? "bg-[#EEF1FF] text-[#4357D9]" : "text-slate-600")}>{period === "today" ? "Сегодня" : period === "week" ? "Неделя" : "Месяц"}</button>)}</div></div>
-            <div className="grid grid-cols-4 gap-3 max-2xl:grid-cols-3 max-lg:grid-cols-2 max-sm:grid-cols-1">
+            <div className="crm-metric-strip crm-metric-strip-wide">
               {dashboardCards.map(([label, value, hint]) => (
                 <article key={label} className="crm-kpi">
                   <span className="text-xs font-semibold text-slate-500">{label}</span>
@@ -1014,18 +967,19 @@ export function CrmApp({ mode = "leads" }: { mode?: CrmAppMode }) {
                           {lead?.companyName ?? "Лид удалён"} · {userName(task.ownerId)}
                         </button>
                         <span className={clsx("mt-2 inline-flex items-center gap-1 text-xs font-semibold", overdue ? "text-rose-700" : "text-slate-500")}>
-                          <Clock3 size={14} /> {dateLabel(task.dueAt)}
+                          <Clock3 size={14} /> {taskDueLabel(task)}
                         </span>
                         {task.result && <p className="mt-2 text-xs text-slate-600">Результат: {task.result}</p>}
-                        {(task.history ?? []).length > 0 && <span className="ml-2 text-xs text-slate-400">История: {task.history!.length}</span>}
+                        {(task.history ?? []).length > 0 && <span className="ml-2 text-xs text-slate-400">История: {task.history!.length} записей</span>}
                       </div>
-                      {task.status === "open" && (
-                        <div className="flex flex-wrap gap-2 max-md:w-full">
+                      <div className="flex flex-wrap gap-2 max-md:w-full">
+                        <button onClick={() => { setSelectedTaskId(task.id); setModal("taskDetails"); }} className="ui-button ui-button-secondary"><CalendarCheck2 size={15} /> Открыть</button>
+                        {task.status === "open" && <>
                           <button disabled={loadingAction} onClick={() => void runAction({ type: "complete_task", payload: { taskId: task.id } }, "Задача выполнена.")} className="ui-button ui-button-success"><CheckCircle2 size={15} /> Выполнить</button>
                           <button disabled={loadingAction} onClick={() => { setSelectedTaskId(task.id); setModal("rescheduleTask"); }} className="ui-button ui-button-secondary"><CalendarClock size={15} /> Перенести</button>
                           <button disabled={loadingAction} onClick={() => void runAction({ type: "cancel_task", payload: { taskId: task.id } }, "Задача отменена.")} className="ui-button ui-button-danger"><X size={15} /> Отменить</button>
-                        </div>
-                      )}
+                        </>}
+                      </div>
                     </article>
                   );
                 })}
@@ -1089,10 +1043,13 @@ export function CrmApp({ mode = "leads" }: { mode?: CrmAppMode }) {
                         {stageLeads.map((lead) => {
                           const isSelected = selectedLeadId === lead.id;
                           const isMoving = movingLeadIds.has(lead.id);
-                          const canManage = currentUser.role === "Руководитель" || currentUser.role === "РОП" || lead.ownerId === currentUser.id;
-                          const leadTasks = state.tasks.filter((task) => task.leadId === lead.id && task.status === "open").sort((a, b) => a.dueAt.localeCompare(b.dueAt));
-                          const isOverdue = leadTasks.some((task) => task.dueAt < todayKey);
-                          const isDueToday = !isOverdue && leadTasks.some((task) => task.dueAt === todayKey);
+                          const canManage = currentUser.role === "Руководитель" || lead.ownerId === currentUser.id;
+                          const dueLeadTasks = state.tasks
+                            .filter((task) => task.leadId === lead.id && task.status === "open" && task.dueAt <= todayKey)
+                            .sort((a, b) => a.dueAt.localeCompare(b.dueAt) || (a.dueTime ?? "23:59").localeCompare(b.dueTime ?? "23:59"));
+                          const isOverdue = dueLeadTasks.some((task) => task.dueAt < todayKey);
+                          const hasTodayTasks = dueLeadTasks.some((task) => task.dueAt === todayKey);
+                          const isDueToday = !isOverdue && hasTodayTasks;
                           return (
                             <article
                               key={lead.id}
@@ -1143,7 +1100,23 @@ export function CrmApp({ mode = "leads" }: { mode?: CrmAppMode }) {
                                   <span className="flex flex-wrap gap-1 pt-1">{lead.phone && <span className="ui-badge">Телефон</span>}{lead.telegram && <span className="ui-badge">Telegram</span>}{lead.whatsapp && <span className="ui-badge">WhatsApp</span>}{lead.max && <span className="ui-badge">MAX</span>}</span>
                                 </span>
                               </button>
-                              {leadTasks.length > 0 && <div className="crm-card-tasks"><strong>{isOverdue ? "Просрочено" : isDueToday ? "Сегодня" : "Ближайшие действия"}</strong>{leadTasks.slice(0, 3).map((task) => <span key={task.id}>{task.title} · {dateLabel(task.dueAt)}</span>)}{leadTasks.length > 3 && <small>Ещё {leadTasks.length - 3}</small>}</div>}
+                              {dueLeadTasks.length > 0 && <div className="crm-card-tasks">
+                                <strong>{isOverdue ? hasTodayTasks ? "Просрочено и сегодня" : "Просрочено" : "Сегодня"}</strong>
+                                {dueLeadTasks.slice(0, 3).map((task) => <button
+                                  key={task.id}
+                                  type="button"
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    setSelectedTaskId(task.id);
+                                    setModal("taskDetails");
+                                  }}
+                                  className="crm-card-task-row"
+                                >
+                                  <span>{task.dueAt < todayKey ? `Просрочено · ${taskDueLabel(task)}` : `Сегодня ${taskTimeLabel(task)}`}</span>
+                                  <b>{task.title}</b>
+                                </button>)}
+                                {dueLeadTasks.length > 3 && <button type="button" className="crm-card-more" onClick={(event) => { event.stopPropagation(); setActiveView("tasks"); }}>Ещё {dueLeadTasks.length - 3}</button>}
+                              </div>}
                               {lead.nextStep && <p className="crm-next-action"><span>Следующее действие</span>{lead.nextStep}</p>}
                               <div className="mt-3 flex items-center justify-between gap-2 border-t border-slate-100 pt-3">
                                 <div className="flex items-center gap-1.5">
@@ -1261,7 +1234,7 @@ export function CrmApp({ mode = "leads" }: { mode?: CrmAppMode }) {
             <Panel
               title="Цепочки прогрева"
               subtitle="Создавайте отдельные сценарии, редактируйте шаги и управляйте доступностью назначения."
-              action={(currentUser.role === "Руководитель" || currentUser.role === "РОП") && (
+              action={currentUser.role === "Руководитель" && (
                 <button onClick={() => { setSelectedWarmupSequenceId(""); setSelectedWarmupStepId(""); setModal("warmupSequence"); }} className="ui-button ui-button-primary">
                   <Plus size={16} /> Новая цепочка
                 </button>
@@ -1280,7 +1253,7 @@ export function CrmApp({ mode = "leads" }: { mode?: CrmAppMode }) {
                         </div>
                         <p className="mt-1 text-sm text-slate-600">{sequence.description || "Описание не заполнено"}</p>
                       </div>
-                      {(currentUser.role === "Руководитель" || currentUser.role === "РОП") && (
+                      {currentUser.role === "Руководитель" && (
                         <div className="flex flex-wrap gap-2">
                           <button
                             onClick={() => { setSelectedWarmupSequenceId(sequence.id); setSelectedWarmupStepId(""); setModal("warmupStep"); }}
@@ -1314,7 +1287,7 @@ export function CrmApp({ mode = "leads" }: { mode?: CrmAppMode }) {
                             {step.attachmentName || (step.attachmentType === "video" ? "Видео" : "Изображение")}
                           </a>}
                         </div>
-                        {(currentUser.role === "Руководитель" || currentUser.role === "РОП") && <div className="flex gap-2">
+                        {currentUser.role === "Руководитель" && <div className="flex gap-2">
                           <button
                             onClick={() => { setSelectedWarmupSequenceId(sequence.id); setSelectedWarmupStepId(step.id); setModal("warmupStep"); }}
                             className="ui-button ui-button-secondary ui-icon-button"
@@ -1371,12 +1344,12 @@ export function CrmApp({ mode = "leads" }: { mode?: CrmAppMode }) {
             <div className="grid grid-cols-[1.2fr_.8fr] gap-4 max-xl:grid-cols-1">
               <Panel
                 title="Аккаунты сотрудников"
-                subtitle="Руководитель управляет всеми ролями. РОП может добавлять менеджеров и аккаунт-менеджеров."
+                subtitle="Только руководитель создаёт аккаунты и назначает роли сотрудников."
                 action={
                   canCreateUsers ? (
                     <button onClick={() => setModal("newUser")} className="ui-button ui-button-primary">Добавить сотрудника</button>
                   ) : (
-                    <span className="rounded-lg bg-slate-100 px-3 py-2 text-sm font-semibold text-slate-600">Создает руководитель или РОП</span>
+                    <span className="rounded-lg bg-slate-100 px-3 py-2 text-sm font-semibold text-slate-600">Создаёт руководитель</span>
                   )
                 }
               >
@@ -1405,12 +1378,12 @@ export function CrmApp({ mode = "leads" }: { mode?: CrmAppMode }) {
                         <div className="mt-3 border-t border-slate-100 pt-3">
                           <span className="text-xs font-semibold text-slate-500">Доступ к приложениям</span>
                           <div className="mt-2 flex flex-wrap gap-2">
-                            {OS_APPS.map((app) => {
+                            {configurableAppsFor(user.role).map((app) => {
                               const active = appAccess.includes(app.id);
                               return <button key={app.id} type="button" onClick={() => void runAction({ type: "update_user_access", payload: { userId: user.id, appPermissions: (active ? appAccess.filter((id) => id !== app.id) : [...appAccess, app.id]) as OsAppId[], autoAssignEnabled: Boolean(user.autoAssignEnabled) } }, "Права сотрудника обновлены.")} className={clsx("ui-button min-h-8 px-2.5 py-1 text-xs", active ? "ui-button-primary" : "ui-button-secondary")}>{app.title}</button>;
                             })}
                           </div>
-                          {(user.role === "Менеджер" || user.role === "РОП") && <label className="mt-3 flex items-center gap-2 text-sm font-semibold text-slate-700"><input type="checkbox" checked={Boolean(user.autoAssignEnabled)} onChange={(event) => void runAction({ type: "update_user_access", payload: { userId: user.id, appPermissions: appAccess, autoAssignEnabled: event.target.checked } }, "Настройка распределения обновлена.")} /> Участвует в автоматическом распределении лидов</label>}
+                          {user.role === "Менеджер по продажам" && <label className="mt-3 flex items-center gap-2 text-sm font-semibold text-slate-700"><input type="checkbox" checked={Boolean(user.autoAssignEnabled)} onChange={(event) => void runAction({ type: "update_user_access", payload: { userId: user.id, appPermissions: appAccess, autoAssignEnabled: event.target.checked } }, "Настройка распределения обновлена.")} /> Участвует в автоматическом распределении лидов</label>}
                         </div>
                       )}
                       <div className="mt-3 flex flex-wrap gap-2">
@@ -1446,7 +1419,7 @@ export function CrmApp({ mode = "leads" }: { mode?: CrmAppMode }) {
               </Panel>
             </div>
 
-            <Panel title="Назначение сделок" subtitle="Руководитель и РОП управляют ответственными за лидов и клиентов.">
+            <Panel title="Назначение сделок" subtitle="Руководитель управляет ответственными за лидов и клиентов.">
               <div className="grid gap-2">
                 {state.leads.length === 0 && <EmptyState title="Назначать пока нечего" text="Сделки появятся после создания реальных лидов." />}
                 {state.leads.map((lead) => (
@@ -1469,9 +1442,9 @@ export function CrmApp({ mode = "leads" }: { mode?: CrmAppMode }) {
                   <div key={entry.id} className="grid grid-cols-[1fr_auto] items-center gap-3 border-b border-slate-100 py-2 last:border-0 max-sm:grid-cols-1">
                     <div>
                       <strong className="block text-sm text-[#202939]">{auditActionLabels[entry.action] ?? entry.action}</strong>
-                      <span className="text-xs text-slate-500">{entry.actorEmail} · {entry.actorRole}</span>
+                      <span className="text-xs text-slate-500">{entry.actorEmail} · {normalizeRole(entry.actorRole)}</span>
                     </div>
-                    <time className="text-xs text-slate-500" dateTime={entry.createdAt}>{new Date(entry.createdAt).toLocaleString("ru-RU")}</time>
+                    <time className="text-xs text-slate-500" dateTime={entry.createdAt}>{formatMoscowDate(entry.createdAt, { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })}</time>
                   </div>
                 ))}
               </div>
@@ -1488,7 +1461,7 @@ export function CrmApp({ mode = "leads" }: { mode?: CrmAppMode }) {
                     <strong className="block text-sm text-[#202939]">Vercel Cron · ежедневно 09:00 МСК</strong>
                     <span className="text-xs text-slate-600">
                       {bootstrap.automationStatus?.status === "completed" && bootstrap.automationStatus.finishedAt
-                        ? `Последний запуск: ${new Date(bootstrap.automationStatus.finishedAt).toLocaleString("ru-RU")}`
+                        ? `Последний запуск: ${formatMoscowDate(bootstrap.automationStatus.finishedAt, { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })}`
                         : bootstrap.automationStatus?.status === "failed"
                           ? "Последний запуск завершился с ошибкой"
                           : bootstrap.automationStatus?.status === "running"
@@ -1549,9 +1522,20 @@ export function CrmApp({ mode = "leads" }: { mode?: CrmAppMode }) {
             <RescheduleTaskForm
               task={state.tasks.find((task) => task.id === selectedTaskId)!}
               onCancel={() => setModal(null)}
-              onSubmit={async (dueAt) => {
-                const ok = await runAction({ type: "reschedule_task", payload: { taskId: selectedTaskId, dueAt } }, "Задача перенесена.");
+              onSubmit={async (dueAt, dueTime) => {
+                const ok = await runAction({ type: "reschedule_task", payload: { taskId: selectedTaskId, dueAt, dueTime: dueTime || undefined } }, "Задача перенесена.");
                 if (ok) setModal(null);
+              }}
+            />
+          )}
+          {modal === "taskDetails" && selectedTask && (
+            <TaskDetails
+              task={selectedTask}
+              lead={state.leads.find((lead) => lead.id === selectedTask.leadId)}
+              ownerName={userName(selectedTask.ownerId)}
+              onOpenLead={(lead) => {
+                setModal(null);
+                openLead(lead);
               }}
             />
           )}
@@ -1690,21 +1674,21 @@ function LoginScreen({ onLogin }: { onLogin: () => Promise<boolean> }) {
   }
 
   return (
-    <main className="grid min-h-[100dvh] place-items-center bg-[#F5F7FA] p-4">
-      <section className="grid w-[min(920px,100%)] grid-cols-[.85fr_1.15fr] overflow-hidden rounded-xl border border-[#E5E7EB] bg-white shadow-[0_12px_28px_rgb(16_24_40/0.10)] max-lg:grid-cols-1">
-        <div className="flex min-h-[520px] flex-col bg-[#151A25] p-8 text-white max-lg:min-h-0">
-          <div className="crm-brand-mark">OA</div>
-          <div className="my-auto py-10">
-            <h1 className="max-w-sm text-3xl font-bold leading-tight">Рабочее пространство OptiAI</h1>
-            <p className="mt-4 max-w-sm text-sm leading-6 text-slate-300">Продажи, задачи, звонки и подписки в одном защищенном интерфейсе.</p>
+    <main className="crm-login-page">
+      <section className="crm-login-panel">
+        <div className="crm-login-aside">
+          <OptiaiLogo />
+          <div className="crm-login-intro">
+            <h1>Рабочее пространство OptiAI</h1>
+            <p>Продажи, задачи, коммуникации и подписки в единой операционной системе.</p>
           </div>
-          <p className="text-xs leading-5 text-slate-400">Доступ к аккаунтам выдает руководитель. Данные и разделы ограничены ролью сотрудника.</p>
+          <p className="crm-login-note">Доступ к аккаунтам выдаёт руководитель. Данные и разделы ограничены ролью сотрудника.</p>
         </div>
 
-        <form onSubmit={resetMode ? (event) => { event.preventDefault(); void requestReset(); } : submit} className="grid content-center gap-5 p-10 max-md:p-6">
+        <form onSubmit={resetMode ? (event) => { event.preventDefault(); void requestReset(); } : submit} className="crm-login-form">
           <div>
-            <h2 className="text-2xl font-bold text-[#202939]">{resetMode ? "Восстановление пароля" : "Вход в CRM"}</h2>
-            <p className="mt-2 text-sm text-slate-600">{resetMode ? "Укажите рабочий email. Ссылка для нового пароля придет на почту." : "Введите рабочий email и пароль."}</p>
+            <h2>{resetMode ? "Восстановление пароля" : "Вход в CRM"}</h2>
+            <p>{resetMode ? "Укажите рабочий email. Ссылка для нового пароля придёт на почту." : "Введите рабочий email и пароль."}</p>
           </div>
           <label className="ui-label">
             Email
@@ -1725,37 +1709,6 @@ function LoginScreen({ onLogin }: { onLogin: () => Promise<boolean> }) {
         </form>
       </section>
     </main>
-  );
-}
-
-function Panel({ title, subtitle, action, children }: { title: string; subtitle: string; action?: React.ReactNode; children: React.ReactNode }) {
-  return (
-    <section className="ui-panel">
-      <div className="ui-panel-header max-md:flex-col">
-        <div>
-          <h2 className="text-base font-bold text-[#202939]">{title}</h2>
-          <p className="mt-1 text-sm text-slate-600">{subtitle}</p>
-        </div>
-        {action}
-      </div>
-      <div className="ui-panel-body">{children}</div>
-    </section>
-  );
-}
-
-function Badge({ children }: { children: React.ReactNode }) {
-  return <span className="ui-badge">{children}</span>;
-}
-
-function EmptyState({ title, text, action }: { title: string; text: string; action?: React.ReactNode }) {
-  return (
-    <div className="ui-empty">
-      <div>
-      <strong className="block text-[#202939]">{title}</strong>
-      <p className="mx-auto mt-2 max-w-xl text-sm text-slate-600">{text}</p>
-      {action && <div className="mt-4">{action}</div>}
-      </div>
-    </div>
   );
 }
 
@@ -2132,23 +2085,77 @@ function CallResultForm({
   );
 }
 
+function TaskDetails({ task, lead, ownerName, onOpenLead }: {
+  task: CrmTask;
+  lead?: Lead;
+  ownerName: string;
+  onOpenLead: (lead: Lead) => void;
+}) {
+  const status = task.status === "open" ? "Запланирована" : task.status === "done" ? "Выполнена" : "Отменена";
+  const priority = task.priority === "high" ? "Высокий" : task.priority === "medium" ? "Средний" : "Низкий";
+  const source = task.source === "warmup" ? "Сценарий прогрева" : task.source === "automation" ? "Автоматизация" : task.source === "platform" ? "Платформа OptiAI" : "Ручная задача";
+  const taskType = task.taskType === "call" ? "Звонок" : task.taskType === "message" ? "Сообщение" : task.taskType === "audit" ? "Аудит" : task.taskType === "case" ? "Кейс" : task.taskType === "proposal" ? "Предложение" : "Другое действие";
+  const historyLabels: Record<string, string> = {
+    created: "Задача создана",
+    completed: "Задача выполнена",
+    cancelled: "Задача отменена",
+    rescheduled: "Срок изменён"
+  };
+
+  return (
+    <div className="grid gap-5">
+      <div className="pr-12">
+        <div className="flex flex-wrap gap-2"><Badge>{status}</Badge><Badge>{taskType}</Badge>{task.manualOverride && <Badge>Ручное изменение</Badge>}</div>
+        <h2 className="mt-3 text-xl font-bold text-[#202939]">{task.title}</h2>
+        <p className="mt-2 text-sm text-slate-600">{lead?.companyName ?? "Карточка лида удалена"} · {ownerName}</p>
+      </div>
+
+      <dl className="grid grid-cols-2 gap-x-6 gap-y-4 border-y border-slate-200 py-4 max-sm:grid-cols-1">
+        <div><dt className="text-xs font-semibold text-slate-500">Срок</dt><dd className="mt-1 text-sm font-semibold text-[#202939]">{taskDueLabel(task)}</dd></div>
+        <div><dt className="text-xs font-semibold text-slate-500">Приоритет</dt><dd className="mt-1 text-sm font-semibold text-[#202939]">{priority}</dd></div>
+        <div><dt className="text-xs font-semibold text-slate-500">Источник</dt><dd className="mt-1 text-sm font-semibold text-[#202939]">{source}</dd></div>
+        <div><dt className="text-xs font-semibold text-slate-500">Ответственный</dt><dd className="mt-1 text-sm font-semibold text-[#202939]">{ownerName}</dd></div>
+      </dl>
+
+      <section>
+        <h3 className="text-sm font-bold text-[#202939]">Описание</h3>
+        <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-slate-700">{task.description || task.title}</p>
+        {task.result && <p className="mt-3 text-sm leading-6 text-slate-700"><strong>Результат:</strong> {task.result}</p>}
+      </section>
+
+      <section>
+        <h3 className="text-sm font-bold text-[#202939]">История задачи</h3>
+        {(task.history ?? []).length === 0 ? <p className="mt-2 text-sm text-slate-500">История пока не сформирована.</p> : <ol className="mt-3 grid gap-3">
+          {task.history!.map((entry, index) => <li key={`${entry.at}:${entry.action}:${index}`} className="grid grid-cols-[124px_minmax(0,1fr)] gap-3 border-t border-slate-100 pt-3 first:border-t-0 first:pt-0 max-sm:grid-cols-1 max-sm:gap-1">
+            <time className="text-xs font-semibold text-slate-500">{taskHistoryDate(entry.at)}</time>
+            <div><strong className="block text-sm text-[#202939]">{historyLabels[entry.action] ?? entry.action}</strong>{entry.detail && <span className="mt-1 block text-xs text-slate-600">{entry.detail}</span>}</div>
+          </li>)}
+        </ol>}
+      </section>
+
+      {lead && <button type="button" onClick={() => onOpenLead(lead)} className="ui-button ui-button-primary w-fit">Открыть карточку лида</button>}
+    </div>
+  );
+}
+
 function RescheduleTaskForm({ task, onSubmit, onCancel }: {
   task: CrmState["tasks"][number];
-  onSubmit: (dueAt: string) => Promise<void>;
+  onSubmit: (dueAt: string, dueTime: string) => Promise<void>;
   onCancel: () => void;
 }) {
-  const minimum = new Date().toISOString().slice(0, 10);
+  const minimum = moscowDateKey();
   return (
     <form onSubmit={(event) => {
       event.preventDefault();
       const data = new FormData(event.currentTarget);
-      void onSubmit(String(data.get("dueAt") ?? ""));
+      void onSubmit(String(data.get("dueAt") ?? ""), String(data.get("dueTime") ?? ""));
     }} className="grid gap-4">
       <div>
         <h2 className="pr-12 text-xl font-bold text-[#202939]">Перенести задачу</h2>
         <p className="mt-1 text-sm leading-5 text-slate-600">{task.title}</p>
       </div>
       <label className="ui-label">Новая дата<input name="dueAt" type="date" min={minimum} defaultValue={task.dueAt < minimum ? minimum : task.dueAt} required className="ui-field" /></label>
+      <label className="ui-label">Время<input name="dueTime" type="time" defaultValue={task.dueTime?.slice(0, 5) ?? ""} className="ui-field" /></label>
       <div className="flex flex-wrap gap-2">
         <button className="ui-button ui-button-primary"><CalendarClock size={15} /> Перенести</button>
         <button type="button" onClick={onCancel} className="ui-button ui-button-secondary">Отмена</button>
@@ -2160,8 +2167,8 @@ function RescheduleTaskForm({ task, onSubmit, onCancel }: {
 function NewUserForm({ currentUser, submitting, onSubmit }: { currentUser: CrmUser; submitting: boolean; onSubmit: (action: CrmAction) => void | Promise<void> }) {
   const [error, setError] = useState("");
   const allowedRoles: Role[] = currentUser.role === "Руководитель"
-    ? ["Менеджер", "Аккаунт-менеджер", "Технический специалист", "РОП", "Руководитель"]
-    : ["Менеджер", "Аккаунт-менеджер"];
+    ? ["Менеджер по продажам", "Технический специалист", "Руководитель"]
+    : [];
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -2179,9 +2186,9 @@ function NewUserForm({ currentUser, submitting, onSubmit }: { currentUser: CrmUs
       <h2 className="pr-12 text-xl font-bold text-[#202939]">Добавить сотрудника</h2>
       <FormInput name="fullName" label="Имя и фамилия" required />
       <FormInput name="email" label="Email" type="email" required />
-      <FormInput name="password" label="Временный пароль" type="password" minLength={10} autoComplete="new-password" required />
-      <FormInput name="passwordConfirmation" label="Повторите пароль" type="password" minLength={10} autoComplete="new-password" required />
-      <p className="text-sm leading-5 text-slate-600">Минимум 10 символов, включая буквы и цифры. Передайте пароль сотруднику безопасным способом: после входа он сможет заменить его через «Сменить пароль».</p>
+      <FormInput name="password" label="Временный пароль" type="password" minLength={8} maxLength={128} autoComplete="new-password" required />
+      <FormInput name="passwordConfirmation" label="Повторите пароль" type="password" minLength={8} maxLength={128} autoComplete="new-password" required />
+      <p className="text-sm leading-5 text-slate-600">Минимум 8 символов, включая буквы и цифры. Передайте пароль сотруднику безопасным способом: после входа он сможет заменить его через «Сменить пароль».</p>
       <label className="ui-label">
         Роль
         <select name="role" className="ui-field">
@@ -2542,7 +2549,7 @@ function ExternalIntegrationForm({ integration }: { integration: CrmState["integ
     <div><h2 className="pr-12 text-xl font-bold text-[#202939]">{integration.name}</h2><p className="mt-1 text-sm text-slate-600">{integration.description}. Ключи шифруются и не возвращаются в браузер.</p></div>
     {loading ? <p className="text-sm text-slate-500">Проверяем состояние...</p> : <div className="grid grid-cols-2 gap-3 max-sm:grid-cols-1">
       <div className="rounded-lg border border-[#E5E7EB] p-3"><span className="text-xs text-slate-500">Настройка</span><strong className="mt-1 block">{summary?.configured ? "Ключи сохранены" : "Не настроено"}</strong></div>
-      <div className="rounded-lg border border-[#E5E7EB] p-3"><span className="text-xs text-slate-500">Последний обмен</span><strong className="mt-1 block">{summary?.lastRun?.started_at ? new Date(summary.lastRun.started_at).toLocaleString("ru-RU") : "Ещё не выполнялся"}</strong></div>
+      <div className="rounded-lg border border-[#E5E7EB] p-3"><span className="text-xs text-slate-500">Последний обмен</span><strong className="mt-1 block">{summary?.lastRun?.started_at ? formatMoscowDate(summary.lastRun.started_at, { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "Ещё не выполнялся"}</strong></div>
     </div>}
     <div className="grid gap-3">{fields.map((field) => <label key={field.name} className="ui-label">
       <span className="flex items-center justify-between gap-3"><span>{field.label}</span><span className={summary?.configuredFields[field.name] ? "text-xs font-semibold text-emerald-700" : "text-xs text-slate-400"}>{summary?.configuredFields[field.name] ? "Сохранено" : "Не задано"}</span></span>
@@ -2703,7 +2710,7 @@ function MessengerIntegrationForm({ channel }: { channel: MessengerChannel }) {
             })}
           </div>
           <label className="ui-label">Webhook URL<input readOnly value={webhookUrl} className="ui-field bg-slate-50" /></label>
-          {connection?.lastSyncAt && <p className="text-xs text-slate-500">Последняя успешная проверка: {new Date(connection.lastSyncAt).toLocaleString("ru-RU")}</p>}
+          {connection?.lastSyncAt && <p className="text-xs text-slate-500">Последняя успешная проверка: {formatMoscowDate(connection.lastSyncAt, { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })}</p>}
           {connection?.lastError && <div className="rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">{connection.lastError}</div>}
         </>
       )}
@@ -2727,7 +2734,7 @@ function EditLeadForm({ lead, state, currentUser, onSubmit, onCancel }: {
   onSubmit: (action: CrmAction) => void;
   onCancel: () => void;
 }) {
-  const canReassign = currentUser.role === "Руководитель" || currentUser.role === "РОП";
+  const canReassign = currentUser.role === "Руководитель";
   const activeOwners = state.users.filter((user) => user.status === "active");
   const ownerOptions = canReassign ? activeOwners : activeOwners.filter((user) => user.id === currentUser.id);
   const channels = Array.from(new Set([lead.sourceChannel, "Cold Call", "Instagram", "Avito", "Telegram ads", "Яндекс директ", "Сайт"]));
@@ -2866,8 +2873,8 @@ function DeleteLeadConfirm({ lead, submitting, onConfirm, onCancel }: {
 
 function NewLeadForm({ state, currentUser, onSubmit }: { state: CrmState; currentUser: CrmUser; onSubmit: (action: CrmAction) => void }) {
   const activeOwners = state.users.filter((user) => user.status === "active");
-  const salesOwners = activeOwners.filter((user) => user.role === "Менеджер" || user.role === "Аккаунт-менеджер" || user.role === "РОП");
-  const canReassign = currentUser.role === "Руководитель" || currentUser.role === "РОП";
+  const salesOwners = activeOwners.filter((user) => user.role === "Менеджер по продажам");
+  const canReassign = currentUser.role === "Руководитель";
   const availableOwners = salesOwners.length > 0 ? salesOwners : activeOwners.filter((user) => user.role === "Руководитель");
   const ownerOptions = canReassign ? availableOwners : activeOwners.filter((user) => user.id === currentUser.id);
   const fallbackOwnerId = ownerOptions[0]?.id ?? currentUser.id;
@@ -3099,11 +3106,11 @@ function RefusalForm({ leadId, onSubmit }: { leadId: string; onSubmit: (action: 
   );
 }
 
-function FormInput({ name, label, type = "text", required = false, defaultValue = "", placeholder, minLength, min, max, autoComplete }: { name: string; label: string; type?: string; required?: boolean; defaultValue?: string; placeholder?: string; minLength?: number; min?: number; max?: number; autoComplete?: string }) {
+function FormInput({ name, label, type = "text", required = false, defaultValue = "", placeholder, minLength, maxLength, min, max, autoComplete }: { name: string; label: string; type?: string; required?: boolean; defaultValue?: string; placeholder?: string; minLength?: number; maxLength?: number; min?: number; max?: number; autoComplete?: string }) {
   return (
     <label className="ui-label">
       {label}
-      <input name={name} type={type} required={required} defaultValue={defaultValue} placeholder={placeholder} minLength={minLength} min={min} max={max} autoComplete={autoComplete} className="ui-field" />
+      <input name={name} type={type} required={required} defaultValue={defaultValue} placeholder={placeholder} minLength={minLength} maxLength={maxLength} min={min} max={max} autoComplete={autoComplete} className="ui-field" />
     </label>
   );
 }

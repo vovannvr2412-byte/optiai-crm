@@ -8,7 +8,7 @@ export async function POST(_request: Request, context: { params: Promise<{ integ
   if (!userId) return NextResponse.json({ error: "Требуется вход" }, { status: 401 });
   const state = await getCrmStateAsync();
   const user = state.users.find((item) => item.id === userId && item.status === "active");
-  if (!user || (user.role !== "Руководитель" && user.role !== "РОП")) return NextResponse.json({ error: "Синхронизация доступна руководителю и РОП." }, { status: 403 });
+  if (!user || user.role !== "Руководитель") return NextResponse.json({ error: "Синхронизация доступна руководителю." }, { status: 403 });
   const { integration } = await context.params;
   if (!isExternalIntegrationId(integration)) return NextResponse.json({ error: "Неизвестная интеграция." }, { status: 404 });
   try {

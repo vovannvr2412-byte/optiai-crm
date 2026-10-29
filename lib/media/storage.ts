@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { moscowDateKey } from "@/lib/time/moscow";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { createServiceSupabaseClient } from "@/lib/supabase/server";
@@ -32,7 +33,7 @@ export function mediaPersistenceUsesSupabase() {
 
 export async function createMediaUpload(name: string, type: string, size: number) {
   const validated = validateMediaMeta({ name, type, size });
-  const objectPath = `warmup/${new Date().toISOString().slice(0, 10)}/${randomUUID()}${validated.extension}`;
+  const objectPath = `warmup/${moscowDateKey()}/${randomUUID()}${validated.extension}`;
   if (!mediaPersistenceUsesSupabase()) {
     return { mode: "local" as const, fileName: path.basename(objectPath), mediaType: validated.mediaType };
   }
@@ -73,7 +74,7 @@ export async function persistMessengerMedia(input: {
     throw new Error("Медиафайл превышает лимит 25 МБ.");
   }
 
-  const objectPath = `messengers/${new Date().toISOString().slice(0, 10)}/${randomUUID()}${extension}`;
+  const objectPath = `messengers/${moscowDateKey()}/${randomUUID()}${extension}`;
   if (!mediaPersistenceUsesSupabase()) {
     const fileName = path.basename(objectPath);
     saveLocalMedia(fileName, new Uint8Array(input.bytes));

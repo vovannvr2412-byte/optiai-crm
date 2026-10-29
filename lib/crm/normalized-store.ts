@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { createServiceSupabaseClient } from "@/lib/supabase/server";
-import type { CrmState } from "./types";
+import { normalizeRole, persistedRole, type CrmState } from "./types";
 
 const migrationMarkerKey = "normalized_storage_v1";
 const legacyStateKey = "crm_state";
@@ -63,7 +63,7 @@ function normalizedState(legacy: CrmState, existingUsers: ExistingRow[], existin
   });
 
   const state: CrmState = {
-    users: legacy.users.map((user) => ({ ...user, id: remap(maps.users, "user", user.id) })),
+    users: legacy.users.map((user) => ({ ...user, id: remap(maps.users, "user", user.id), role: normalizeRole(user.role) })),
     tariffs: legacy.tariffs.map((tariff) => ({ ...tariff, id: remap(maps.tariffs, "tariff", tariff.id) })),
     leads: legacy.leads.map((lead) => ({
       ...lead,
@@ -130,7 +130,8 @@ export async function readNormalizedCrmState() {
   const { data, error } = await supabase.rpc("get_crm_state_normalized");
   if (error) throw new Error(`Не применена миграция 0004_normalized_crm_and_auth.sql: ${error.message}`);
   const state = data as CrmState;
-  const metadata = await supabase.from("tasks").select("id, due_time, task_type, description, result, manual_override, source, history");
+  state.users.forEach((user) => { user.role = normalizeRole(user.role); });
+  const metadata = await supabase.from("tasks").select("id, due_time, task_type, description, result, manual_override, source, history, created_at");
   if (!metadata.error) {
     const byId = new Map((metadata.data ?? []).map((row) => [row.id, row]));
     state.tasks.forEach((task) => {
@@ -142,7 +143,9 @@ export async function readNormalizedCrmState() {
       task.result = row.result ?? undefined;
       task.manualOverride = Boolean(row.manual_override);
       task.source = row.source ?? undefined;
-      task.history = Array.isArray(row.history) ? row.history : [];
+      task.history = Array.isArray(row.history) && row.history.length > 0
+        ? row.history
+        : [{ at: String(row.created_at ?? new Date().toISOString()), action: "created" }];
     });
   }
   const callMetadata = await supabase.from("call_records").select("id, call_result, duration_seconds, external_id");
@@ -161,7 +164,11 @@ export async function readNormalizedCrmState() {
 
 export async function writeNormalizedCrmState(state: CrmState) {
   const supabase = createServiceSupabaseClient();
-  const { error } = await supabase.rpc("save_crm_state_normalized", { p_state: state });
+  const storageState = {
+    ...state,
+    users: state.users.map((user) => ({ ...user, role: persistedRole(user.role) }))
+  };
+  const { error } = await supabase.rpc("save_crm_state_normalized", { p_state: storageState });
   if (error) throw new Error(`Не удалось сохранить нормализованные данные CRM: ${error.message}`);
   if (state.tasks.length) {
     const { error: metadataError } = await supabase.from("tasks").upsert(state.tasks.map((task) => ({

@@ -6,7 +6,7 @@ import { getCrmStateAsync } from "@/lib/crm/store";
 import { recordSecurityAuditSafe } from "@/lib/security/audit";
 
 const passwordSchema = z.string()
-  .min(10, "Пароль должен содержать минимум 10 символов.")
+  .min(8, "Пароль должен содержать минимум 8 символов.")
   .max(128)
   .regex(/[a-zа-я]/i, "Добавьте буквы.")
   .regex(/\d/, "Добавьте цифру.");

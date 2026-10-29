@@ -18,15 +18,24 @@ export const OS_APPS: OsAppDefinition[] = [
 
 const defaultAccess: Record<Role, OsAppId[]> = {
   "Руководитель": ["leads", "management", "content", "routines", "settings", "team"],
-  "РОП": ["leads", "routines", "team"],
-  "Менеджер": ["leads"],
-  "Аккаунт-менеджер": ["leads", "management"],
-  "Технический специалист": ["leads", "settings", "routines"]
+  "Менеджер по продажам": ["leads"],
+  "Технический специалист": ["leads", "settings"]
 };
+
+const accessCeiling: Record<Role, OsAppId[]> = {
+  "Руководитель": ["leads", "management", "content", "routines", "settings", "team"],
+  "Менеджер по продажам": ["leads", "content", "routines"],
+  "Технический специалист": ["leads", "content", "routines", "settings"]
+};
+
+export function configurableAppsFor(role: Role) {
+  return OS_APPS.filter((app) => accessCeiling[role].includes(app.id));
+}
 
 export function appAccessFor(user: Pick<CrmUser, "role" | "appPermissions">) {
   if (user.role === "Руководитель") return defaultAccess[user.role];
-  return user.appPermissions ?? defaultAccess[user.role];
+  const allowed = new Set(accessCeiling[user.role]);
+  return [...new Set([...defaultAccess[user.role], ...(user.appPermissions ?? [])])].filter((app) => allowed.has(app));
 }
 
 export function canAccessApp(user: Pick<CrmUser, "role" | "appPermissions">, app: OsAppId) {

@@ -12,6 +12,7 @@ import {
   type KPI,
   type Routine,
 } from "@/lib/routines/seed";
+import { addCalendarDays, formatMoscowDate, moscowDateKey, moscowWeekStartDateKey } from "@/lib/time/moscow";
 
 type Tab = "week" | "routines" | "metrics" | "settings";
 type TaskStatus = "К выполнению" | "В работе" | "Готово";
@@ -80,10 +81,7 @@ const storageKeys = {
 };
 
 function dateKey(date: Date) {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
+  return moscowDateKey(date);
 }
 
 const emptyTask = (owners: string[], blocks: string[], date: Date): Task => ({
@@ -99,23 +97,17 @@ const emptyTask = (owners: string[], blocks: string[], date: Date): Task => ({
 });
 
 function startOfWeek(date: Date) {
-  const copy = new Date(date);
-  const day = copy.getDay() || 7;
-  copy.setDate(copy.getDate() - day + 1);
-  copy.setHours(0, 0, 0, 0);
-  return copy;
+  return new Date(`${moscowWeekStartDateKey(date)}T00:00:00Z`);
 }
 
 function addDays(date: Date, amount: number) {
-  const copy = new Date(date);
-  copy.setDate(copy.getDate() + amount);
-  return copy;
+  return new Date(`${addCalendarDays(dateKey(date), amount)}T00:00:00Z`);
 }
 
 function formatRange(monday: Date) {
   const friday = addDays(monday, 4);
-  const left = monday.toLocaleDateString("ru-RU", { day: "numeric", month: "long" });
-  const right = friday.toLocaleDateString("ru-RU", { day: "numeric", month: "long", year: "numeric" });
+  const left = formatMoscowDate(dateKey(monday), { day: "numeric", month: "long" });
+  const right = formatMoscowDate(dateKey(friday), { day: "numeric", month: "long", year: "numeric" });
   return `${left} — ${right}`;
 }
 
@@ -427,7 +419,7 @@ export function RoutinesModule({ teamMembers = [] }: { teamMembers?: { id: strin
             <section className="week-board" aria-label="Недельный календарь" style={{ gridTemplateColumns: `repeat(${Math.max(settings.workdays.length, 1)}, minmax(0, 1fr))` }}>
               {settings.workdays.map((day, index) => {
                 const date = addDays(monday, index);
-                const isToday = date.toDateString() === new Date().toDateString();
+                const isToday = dateKey(date) === moscowDateKey();
                 const dayRoutines = activeWeekly
                   .filter((item) => item.days.includes(day))
                   .sort((a, b) => a.time.localeCompare(b.time));
@@ -442,7 +434,7 @@ export function RoutinesModule({ teamMembers = [] }: { teamMembers?: { id: strin
                     onDrop={() => draggedTaskId ? moveTask(date, day) : moveRoutine(day)}
                   >
                     <header>
-                      <div><span>{dayShort[day]}</span><strong>{date.getDate()}</strong></div>
+                      <div><span>{dayShort[day]}</span><strong>{Number(dateKey(date).slice(-2))}</strong></div>
                       <em>{dayRoutines.length + dayTasks.length}</em>
                     </header>
                     <div className="day-body">
@@ -605,7 +597,7 @@ export function RoutinesModule({ teamMembers = [] }: { teamMembers?: { id: strin
             <header><div><span>{taskModalMode === "create" ? "НОВАЯ ЗАДАЧА" : "РЕДАКТИРОВАНИЕ"}</span><h2>{taskModalMode === "create" ? "Добавить задачу" : "Настроить задачу"}</h2></div><button type="button" onClick={() => setEditingTask(null)}>×</button></header>
             <div className="modal-body">
               <label className="wide">Что нужно сделать<textarea value={editingTask.title} onChange={(event) => setEditingTask({ ...editingTask, title: event.target.value })} required rows={2} placeholder="Например, подготовить КП для клиента" /></label>
-              <label>День<select value={editingTask.date} onChange={(event) => setEditingTask({ ...editingTask, date: event.target.value })}>{settings.workdays.map((day, index) => { const date = addDays(monday, index); return <option key={day} value={dateKey(date)}>{day}, {date.toLocaleDateString("ru-RU", { day: "numeric", month: "short" })}</option>; })}</select></label>
+              <label>День<select value={editingTask.date} onChange={(event) => setEditingTask({ ...editingTask, date: event.target.value })}>{settings.workdays.map((day, index) => { const date = addDays(monday, index); return <option key={day} value={dateKey(date)}>{day}, {formatMoscowDate(dateKey(date), { day: "numeric", month: "short" })}</option>; })}</select></label>
               <label>Статус<select value={editingTask.status} onChange={(event) => setEditingTask({ ...editingTask, status: event.target.value as TaskStatus })}><option>К выполнению</option><option>В работе</option><option>Готово</option></select></label>
               <label>Тематический блок<select value={editingTask.block} onChange={(event) => setEditingTask({ ...editingTask, block: event.target.value })}>{categories.map((category) => <option key={category}>{category}</option>)}</select></label>
               <label>Ответственный<select value={editingTask.owner} onChange={(event) => setEditingTask({ ...editingTask, owner: event.target.value })}>{team.map((person) => <option key={person}>{person}</option>)}</select></label>
@@ -658,7 +650,7 @@ function initials(value: string) {
 }
 
 function getWeekNumber(date: Date) {
-  const current = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+  const current = new Date(`${dateKey(date)}T00:00:00Z`);
   const day = current.getUTCDay() || 7;
   current.setUTCDate(current.getUTCDate() + 4 - day);
   const yearStart = new Date(Date.UTC(current.getUTCFullYear(), 0, 1));

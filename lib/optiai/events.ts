@@ -1,5 +1,6 @@
 import { applyCrmActionAsync, getCrmStateAsync } from "@/lib/crm/store";
 import { createServiceSupabaseClient } from "@/lib/supabase/server";
+import { moscowStartOfDayIso } from "@/lib/time/moscow";
 
 export type OptiaiEvent = {
   eventId: string;
@@ -87,7 +88,10 @@ export async function processOptiaiEvent(event: OptiaiEvent) {
     payload: event.data,
     occurred_at: event.occurredAt
   }).select("id").maybeSingle();
-  if (insertError?.code === "23505") return { duplicate: true, pending: false };
+  if (insertError?.code === "23505") {
+    const { lead } = await findLead(event);
+    return { duplicate: true, pending: event.type === "account_registered", leadId: lead?.id };
+  }
   if (insertError) throw insertError;
 
   if (event.type === "account_registered") return { duplicate: false, pending: true };
@@ -136,7 +140,7 @@ export async function processOptiaiEvent(event: OptiaiEvent) {
 export async function processPendingRegistrations() {
   const supabase = createServiceSupabaseClient();
   const { data, error } = await supabase.from("optiai_events").select("id, external_event_id, event_type, occurred_at, payload, account_id")
-    .eq("event_type", "account_registered").eq("status", "pending").lt("occurred_at", new Date(new Date().setHours(0, 0, 0, 0)).toISOString()).limit(100);
+    .eq("event_type", "account_registered").eq("status", "pending").lt("occurred_at", moscowStartOfDayIso()).limit(100);
   if (error?.code === "42P01" || error?.code === "PGRST205") return { created: 0, skipped: 0 };
   if (error) throw error;
   let created = 0;

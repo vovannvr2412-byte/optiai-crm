@@ -2,9 +2,11 @@ import { after, NextResponse } from "next/server";
 import { processIncomingAiReply } from "@/lib/ai/messaging";
 import { telegramAdapter } from "@/lib/messaging/providers/telegram";
 import { archiveTelegramAttachments } from "@/lib/messaging/media-archive";
-import { listConnections } from "@/lib/messaging/store";
-import { saveIncomingMessageAndNotify } from "@/lib/messaging/incoming";
+import { linkConversationToLeadSystem, listConnections, saveIncomingMessage } from "@/lib/messaging/store";
+import { notifyIncomingMessage } from "@/lib/messaging/incoming";
 import { getMessengerSecrets } from "@/lib/messaging/secrets";
+import { processTelegramManagerCallRequest } from "@/lib/optiai/telegram-leads";
+import { getCrmStateAsync } from "@/lib/crm/store";
 
 export const maxDuration = 120;
 
@@ -31,13 +33,24 @@ export async function POST(request: Request) {
         }
       }
       const eventPrefix = botExternalAccountId ?? "telegram";
-      return saveIncomingMessageAndNotify({
+      const incoming = {
         ...message,
         eventId: `${eventPrefix}:${message.eventId}`,
         externalMessageId: `${eventPrefix}:${message.externalMessageId}`,
         attachments,
         botExternalAccountId
-      });
+      };
+      let result = await saveIncomingMessage(incoming);
+      const leadEvent = await processTelegramManagerCallRequest(incoming);
+      if (leadEvent?.leadId && result.conversation) {
+        const lead = (await getCrmStateAsync()).leads.find((item) => item.id === leadEvent.leadId);
+        if (lead) {
+          const conversation = await linkConversationToLeadSystem(result.conversation.id, lead.id, lead.ownerId);
+          result = { ...result, conversation };
+        }
+      }
+      await notifyIncomingMessage(incoming, result);
+      return result;
     }));
     after(() => Promise.all(results.map(processIncomingAiReply)).then(() => undefined));
     return NextResponse.json({ ok: true, accepted: results.filter((item) => !item.duplicate).length });

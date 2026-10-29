@@ -1,4 +1,14 @@
-export type Role = "Руководитель" | "РОП" | "Менеджер" | "Аккаунт-менеджер" | "Технический специалист";
+export type Role = "Руководитель" | "Менеджер по продажам" | "Технический специалист";
+export type PersistedRole = "Руководитель" | "Менеджер" | "Технический специалист";
+
+export function normalizeRole(value: unknown): Role {
+  if (value === "Руководитель" || value === "Технический специалист") return value;
+  return "Менеджер по продажам";
+}
+
+export function persistedRole(role: Role): PersistedRole {
+  return role === "Менеджер по продажам" ? "Менеджер" : role;
+}
 export type OsAppId = "leads" | "management" | "content" | "routines" | "settings" | "team";
 export type UserStatus = "active" | "disabled";
 export type LeadTemperature = "hot" | "warm" | "cold";
@@ -253,7 +263,7 @@ export type CrmAction =
   | { type: "delete_user"; payload: { userId: string } }
   | { type: "update_user_access"; payload: { userId: string; appPermissions: OsAppId[]; autoAssignEnabled: boolean } }
   | { type: "complete_task"; payload: { taskId: string } }
-  | { type: "reschedule_task"; payload: { taskId: string; dueAt: string } }
+  | { type: "reschedule_task"; payload: { taskId: string; dueAt: string; dueTime?: string } }
   | { type: "cancel_task"; payload: { taskId: string } }
   | { type: "create_lead"; payload: Omit<Lead, "id" | "stage" | "status" | "score" | "temperature" | "createdAt"> }
   | { type: "update_lead"; payload: { leadId: string; changes: LeadUpdate } }
@@ -295,9 +305,7 @@ export const STAGES = [
 
 export const ROLE_PERMISSIONS: Record<Role, ViewId[]> = {
   Руководитель: ["dashboard", "management", "tasks", "pipeline", "messengers", "lead", "callcenter", "warmup", "subscriptions", "team", "automations"],
-  РОП: ["dashboard", "tasks", "pipeline", "messengers", "lead", "callcenter", "warmup", "team"],
-  Менеджер: ["dashboard", "tasks", "pipeline", "messengers", "lead", "callcenter", "warmup"],
-  "Аккаунт-менеджер": ["dashboard", "management", "tasks", "messengers", "lead", "callcenter", "subscriptions"],
+  "Менеджер по продажам": ["dashboard", "tasks", "pipeline", "messengers", "lead", "callcenter", "warmup"],
   "Технический специалист": ["dashboard", "tasks", "pipeline", "lead", "callcenter", "automations"]
 };
 

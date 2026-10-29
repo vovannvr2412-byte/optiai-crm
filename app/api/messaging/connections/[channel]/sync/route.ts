@@ -11,7 +11,7 @@ export async function POST(_request: Request, context: { params: Promise<{ chann
   if (!userId) return NextResponse.json({ error: "Требуется вход" }, { status: 401 });
   const state = await getCrmStateAsync();
   const user = state.users.find((item) => item.id === userId && item.status === "active");
-  if (!user || (user.role !== "Руководитель" && user.role !== "РОП")) return NextResponse.json({ error: "Недостаточно прав." }, { status: 403 });
+  if (!user || user.role !== "Руководитель") return NextResponse.json({ error: "Недостаточно прав." }, { status: 403 });
   const { channel } = await context.params;
   if (!isMessengerChannel(channel)) return NextResponse.json({ error: "Неизвестный канал." }, { status: 404 });
   const adapter = providerFor(channel);

@@ -16,6 +16,7 @@ import {
 import { OS_APPS, appAccessFor } from "@/lib/os/apps";
 import type { CrmUser, OsAppId } from "@/lib/crm/types";
 import { readApiJson, readApiJsonOrNull } from "@/lib/api/client";
+import { OptiaiLogo } from "@/components/brand/optiai-logo";
 
 type Bootstrap = { currentUser: CrmUser };
 
@@ -61,10 +62,11 @@ export function OperationsHome() {
   if (!bootstrap) return <OsLogin onLogin={load} />;
 
   const available = new Set(appAccessFor(bootstrap.currentUser));
+  const availableApps = OS_APPS.filter((app) => available.has(app.id));
   return (
     <main className="os-home">
       <header className="os-home-header">
-        <div className="os-wordmark"><span>OA</span><div><strong>OptiAI</strong><small>Operations OS</small></div></div>
+        <OptiaiLogo />
         <div className="os-account">
           <div><strong>{bootstrap.currentUser.fullName}</strong><small>{bootstrap.currentUser.role}</small></div>
           <button
@@ -85,8 +87,8 @@ export function OperationsHome() {
           <h1 id="workspace-title">Приложения</h1>
           <span>Доступ определяется ролью и персональными разрешениями.</span>
         </div>
-        <div className="os-app-grid">
-          {OS_APPS.filter((app) => available.has(app.id)).map((app) => {
+        <div className="os-app-grid" data-app-count={availableApps.length}>
+          {availableApps.map((app) => {
             const Icon = appIcons[app.id];
             return (
               <Link href={{ pathname: app.href }} key={app.id} className="os-app-tile">
@@ -106,13 +108,16 @@ function OsLogin({ onLogin }: { onLogin: () => Promise<boolean> }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+  const [resetMode, setResetMode] = useState(false);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
     setSubmitting(true);
     setError("");
+    setNotice("");
     try {
       const response = await fetch("/api/auth/login", {
         method: "POST",
@@ -129,16 +134,53 @@ function OsLogin({ onLogin }: { onLogin: () => Promise<boolean> }) {
     }
   }
 
+  async function requestReset(event: FormEvent) {
+    event.preventDefault();
+    setSubmitting(true);
+    setError("");
+    setNotice("");
+    try {
+      const response = await fetch("/api/auth/password-reset/request", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email })
+      });
+      const body = await readApiJsonOrNull<{ error?: string; message?: string }>(response);
+      if (!response.ok) throw new Error(body?.error || "Не удалось отправить письмо");
+      setNotice(body?.message || "Проверьте почту и папку «Спам».");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Не удалось отправить письмо");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  function toggleResetMode() {
+    setResetMode((value) => !value);
+    setError("");
+    setNotice("");
+    setPassword("");
+  }
+
   return (
     <main className="os-login-page">
       <section className="os-login-panel">
-        <div className="os-wordmark os-wordmark-dark"><span>OA</span><div><strong>OptiAI</strong><small>Operations OS</small></div></div>
-        <div className="os-login-copy"><h1>Вход в рабочее пространство</h1><p>Используйте корпоративный аккаунт, выданный руководителем.</p></div>
-        <form onSubmit={submit} className="os-login-form">
+        <OptiaiLogo className="os-wordmark-dark" />
+        <div className="os-login-copy">
+          <h1>{resetMode ? "Восстановление пароля" : "Вход в рабочее пространство"}</h1>
+          <p>{resetMode ? "Укажите рабочий email. Ссылка для нового пароля придёт на почту." : "Используйте корпоративный аккаунт, выданный руководителем."}</p>
+        </div>
+        <form onSubmit={resetMode ? requestReset : submit} className="os-login-form">
           <label>Email<input type="email" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="username" required /></label>
-          <label>Пароль<span className="os-password-field"><input type={showPassword ? "text" : "password"} value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" required /><button type="button" onClick={() => setShowPassword((value) => !value)} aria-label={showPassword ? "Скрыть пароль" : "Показать пароль"}>{showPassword ? <EyeOff size={18} /> : <Eye size={18} />}</button></span></label>
+          {!resetMode && <label>Пароль<span className="os-password-field"><input type={showPassword ? "text" : "password"} value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" required /><button type="button" onClick={() => setShowPassword((value) => !value)} aria-label={showPassword ? "Скрыть пароль" : "Показать пароль"}>{showPassword ? <EyeOff size={18} /> : <Eye size={18} />}</button></span></label>}
           {error && <p className="os-login-error">{error}</p>}
-          <button className="os-login-submit" disabled={submitting}>{submitting ? "Входим..." : "Войти"}</button>
+          {notice && <p className="os-login-success" role="status">{notice}</p>}
+          <button className="os-login-submit" disabled={submitting}>
+            {submitting ? (resetMode ? "Отправляем..." : "Входим...") : resetMode ? "Отправить ссылку" : "Войти"}
+          </button>
+          <button type="button" onClick={toggleResetMode} className="os-login-alternate">
+            {resetMode ? "Вернуться ко входу" : "Забыли пароль?"}
+          </button>
         </form>
       </section>
     </main>

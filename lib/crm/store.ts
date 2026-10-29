@@ -3,12 +3,13 @@ import { disableCredential, getCredentialsSnapshot, hydrateCredentialsSnapshot }
 import { createServiceSupabaseClient } from "@/lib/supabase/server";
 import { ensureNormalizedCrmState, writeNormalizedCrmState } from "./normalized-store";
 import { migrateLegacyIntegrationSecrets } from "@/lib/integrations/secrets";
-import { STAGES, type CrmAction, type CrmState, type CrmUser, type DashboardMetrics, type Lead, type LeadTemperature, type LeadUpdate, type ManualCallResult, type SalesPeriodMetrics } from "./types";
+import { normalizeRole, STAGES, type CrmAction, type CrmState, type CrmUser, type DashboardMetrics, type Lead, type LeadTemperature, type LeadUpdate, type ManualCallResult, type SalesPeriodMetrics } from "./types";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { hydrateUserSettings, saveUserSettings } from "@/lib/os/user-settings";
 import { hydrateLeadOperations, saveActivationCheck, saveLeadOperations } from "./operations-store";
+import { addCalendarDays, daysBetweenCalendarDates, formatMoscowDate, moscowDateKey, moscowMonthStartDateKey, moscowWeekStartDateKey } from "@/lib/time/moscow";
 
 const globalForCrm = globalThis as unknown as { optiCrmState?: CrmState };
 const dataDir = process.env.CRM_DATA_DIR || path.join(process.cwd(), "data");
@@ -66,6 +67,13 @@ function persistState(state: CrmState) {
 
 function migrateState(state: CrmState) {
   let changed = false;
+  state.users.forEach((user) => {
+    const role = normalizeRole(user.role);
+    if (user.role !== role) {
+      user.role = role;
+      changed = true;
+    }
+  });
   if (!state.integrations.some((integration) => integration.id === "optiai")) {
     state.integrations.push({ id: "optiai", name: "Платформа OptiAI", description: "Регистрации, проекты, оплаты и подписки через API/webhook", status: "needs_setup" });
     changed = true;
@@ -105,7 +113,7 @@ function migrateState(state: CrmState) {
   if (retiredUsers.length === 0) return { state, changed };
 
   const retiredIds = new Set(retiredUsers.map((user) => user.id));
-  const fallback = state.users.find((user) => user.role === "РОП" && user.status === "active" && !retiredIds.has(user.id))
+  const fallback = state.users.find((user) => user.role === "Менеджер по продажам" && user.status === "active" && !retiredIds.has(user.id))
     ?? state.users.find((user) => user.role === "Руководитель" && user.status === "active");
 
   state.leads.forEach((lead) => {
@@ -141,15 +149,11 @@ function today() {
 }
 
 function dateOnly(daysFromNow = 0) {
-  const date = new Date();
-  date.setDate(date.getDate() + daysFromNow);
-  return date.toISOString().slice(0, 10);
+  return addCalendarDays(moscowDateKey(), daysFromNow);
 }
 
 function shiftDate(value: string, days: number) {
-  const date = new Date(`${value.slice(0, 10)}T00:00:00Z`);
-  date.setUTCDate(date.getUTCDate() + days);
-  return date.toISOString().slice(0, 10);
+  return addCalendarDays(value, days);
 }
 
 export function getCrmState(): CrmState {
@@ -237,7 +241,7 @@ export async function scopedStateForAsync(userId: string): Promise<CrmState> {
 function scopeState(state: CrmState, userId: string): CrmState {
   const user = state.users.find((item) => item.id === userId);
   if (!user || user.role === "Руководитель") return state;
-  if (user.role === "Менеджер" || user.role === "РОП" || user.role === "Технический специалист") {
+  if (user.role === "Менеджер по продажам" || user.role === "Технический специалист") {
     return {
       ...state,
       payments: [],
@@ -343,12 +347,11 @@ function recordManualCallResult(
 }
 
 function dateLabelForTask(daysFromNow: number) {
-  return new Intl.DateTimeFormat("ru-RU", { day: "2-digit", month: "long", year: "numeric" }).format(new Date(dateOnly(daysFromNow)));
+  return formatMoscowDate(dateOnly(daysFromNow), { day: "2-digit", month: "long", year: "numeric" });
 }
 
 function dateLabelForTaskDate(value: string) {
-  return new Intl.DateTimeFormat("ru-RU", { day: "2-digit", month: "long", year: "numeric", timeZone: "UTC" })
-    .format(new Date(`${value}T00:00:00Z`));
+  return formatMoscowDate(value, { day: "2-digit", month: "long", year: "numeric" });
 }
 
 function leadStatusForStage(stage: number): Lead["status"] {
@@ -389,11 +392,13 @@ export function applyCrmAction(action: CrmAction): CrmState {
       }
       if (dueAt < dateOnly()) throw new Error("Задачу нельзя перенести в прошлое.");
       task.dueAt = dueAt;
+      task.dueTime = action.payload.dueTime?.trim() || undefined;
       task.status = "open";
       task.manualOverride = true;
       task.source = "manual";
-      task.history = [...(task.history ?? []), { at: today(), action: "rescheduled", detail: dueAt }];
-      if (lead) addActivity(state, lead.id, "task", "Задача перенесена", `${task.title}: ${dateLabelForTaskDate(dueAt)}.`);
+      const deadline = `${dueAt}${task.dueTime ? ` ${task.dueTime}` : ""}`;
+      task.history = [...(task.history ?? []), { at: today(), action: "rescheduled", detail: deadline }];
+      if (lead) addActivity(state, lead.id, "task", "Задача перенесена", `${task.title}: ${dateLabelForTaskDate(dueAt)}${task.dueTime ? `, ${task.dueTime}` : ""}.`);
     }
   }
 
@@ -476,7 +481,7 @@ export function applyCrmAction(action: CrmAction): CrmState {
   if (action.type === "disable_user") {
     const user = state.users.find((item) => item.id === action.payload.userId);
     const fallback = state.users.find((item) => item.role === user?.role && item.status === "active" && item.id !== user?.id)
-      ?? state.users.find((item) => item.role === "РОП" && item.status === "active" && item.id !== user?.id)
+      ?? state.users.find((item) => item.role === "Менеджер по продажам" && item.status === "active" && item.id !== user?.id)
       ?? state.users.find((item) => item.role === "Руководитель" && item.status === "active" && item.id !== user?.id);
     if (user && user.role !== "Руководитель") {
       user.status = "disabled";
@@ -494,7 +499,7 @@ export function applyCrmAction(action: CrmAction): CrmState {
   if (action.type === "delete_user") {
     const user = state.users.find((item) => item.id === action.payload.userId);
     if (user && user.role !== "Руководитель") {
-      const fallback = state.users.find((item) => item.role === "РОП" && item.status === "active" && item.id !== user.id)
+      const fallback = state.users.find((item) => item.role === "Менеджер по продажам" && item.status === "active" && item.id !== user.id)
         ?? state.users.find((item) => item.role === "Руководитель" && item.status === "active");
       state.leads.filter((lead) => lead.ownerId === user.id).forEach((lead) => {
         lead.ownerId = fallback?.id ?? "";
@@ -521,12 +526,11 @@ export function applyCrmAction(action: CrmAction): CrmState {
     );
     if (duplicate) throw new Error(`Лид уже существует: ${duplicate.companyName}. Откройте существующую карточку.`);
     const autoOwners = state.users
-      .filter((user) => user.status === "active" && (user.role === "Менеджер" || user.role === "РОП") && user.autoAssignEnabled)
+      .filter((user) => user.status === "active" && user.role === "Менеджер по продажам" && user.autoAssignEnabled)
       .sort((left, right) => state.leads.filter((lead) => lead.ownerId === left.id).length - state.leads.filter((lead) => lead.ownerId === right.id).length || left.createdAt.localeCompare(right.createdAt));
     const fallbackOwner = state.users.find((user) => user.status === "active" && user.id === action.payload.ownerId)
       ?? autoOwners[0]
-      ?? state.users.find((user) => user.status === "active" && user.role === "Менеджер")
-      ?? state.users.find((user) => user.status === "active" && user.role === "РОП")
+      ?? state.users.find((user) => user.status === "active" && user.role === "Менеджер по продажам")
       ?? state.users.find((user) => user.status === "active" && user.role === "Руководитель");
     if (!fallbackOwner) throw new Error("Нет активного сотрудника, которому можно назначить лида.");
     const lead: Lead = {
@@ -971,12 +975,12 @@ export function dashboardMetrics(state: CrmState): DashboardMetrics {
   const customerSubscriptions = [...activeSubscriptions, ...cancelledSubscriptions];
   const churn = customerSubscriptions.length ? roundPercent(cancelledSubscriptions.length / customerSubscriptions.length) : 0;
   const ltv = deals ? Math.round(paidRevenue / deals) : 0;
-  const now = Date.now();
+  const todayKey = moscowDateKey();
   const lifetimeDays = customerSubscriptions.map((subscription) => {
-    const startedAt = Date.parse(subscription.startedAt);
-    const contractualEnd = Date.parse(subscription.endsAt);
-    const effectiveEnd = subscription.status === "active" ? Math.min(now, contractualEnd) : contractualEnd;
-    return Number.isFinite(startedAt) && Number.isFinite(effectiveEnd) ? Math.max(0, (effectiveEnd - startedAt) / 86_400_000) : 0;
+    const startedAt = subscription.startedAt.slice(0, 10);
+    const contractualEnd = subscription.endsAt.slice(0, 10);
+    const effectiveEnd = subscription.status === "active" && todayKey < contractualEnd ? todayKey : contractualEnd;
+    return Math.max(0, daysBetweenCalendarDates(startedAt, effectiveEnd));
   });
   const averageLifetimeMonths = lifetimeDays.length
     ? Math.round((lifetimeDays.reduce((sum, days) => sum + days, 0) / lifetimeDays.length / 30.44) * 10) / 10
@@ -1026,30 +1030,27 @@ export function dashboardMetrics(state: CrmState): DashboardMetrics {
 }
 
 export function salesPeriodMetrics(state: CrmState, user: CrmUser): SalesPeriodMetrics {
-  const now = new Date();
-  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const weekStart = new Date(todayStart);
-  const weekday = weekStart.getDay() || 7;
-  weekStart.setDate(weekStart.getDate() - weekday + 1);
-  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+  const todayStart = moscowDateKey();
+  const weekStart = moscowWeekStartDateKey();
+  const monthStart = moscowMonthStartDateKey();
   const ownedLeadIds = new Set(
     state.leads
-      .filter((lead) => user.role === "Менеджер" ? lead.ownerId === user.id : true)
+      .filter((lead) => user.role === "Менеджер по продажам" ? lead.ownerId === user.id : true)
       .map((lead) => lead.id)
   );
   const periods = { today: todayStart, week: weekStart, month: monthStart } as const;
   return Object.fromEntries(Object.entries(periods).map(([key, start]) => {
-    const leads = state.leads.filter((lead) => ownedLeadIds.has(lead.id) && Date.parse(lead.createdAt) >= start.getTime()).length;
+    const leads = state.leads.filter((lead) => ownedLeadIds.has(lead.id) && moscowDateKey(lead.createdAt) >= start).length;
     const actualContacts = state.activities.filter((activity) => ownedLeadIds.has(activity.leadId)
       && activity.type === "call"
       && (activity.title === "Дозвонились" || activity.title === "Назначена встреча")
-      && Date.parse(activity.createdAt) >= start.getTime()).length;
+      && moscowDateKey(activity.createdAt) >= start).length;
     const firstPayments = new Map<string, string>();
     state.payments.filter((payment) => payment.status === "paid" && ownedLeadIds.has(payment.leadId)).forEach((payment) => {
       const current = firstPayments.get(payment.leadId);
       if (!current || payment.paidAt < current) firstPayments.set(payment.leadId, payment.paidAt);
     });
-    const firstPaidDeals = [...firstPayments.values()].filter((paidAt) => Date.parse(`${paidAt.slice(0, 10)}T00:00:00`) >= start.getTime()).length;
+    const firstPaidDeals = [...firstPayments.values()].filter((paidAt) => moscowDateKey(paidAt) >= start).length;
     return [key, { leads, actualContacts, firstPaidDeals }];
   })) as SalesPeriodMetrics;
 }

@@ -11,6 +11,7 @@ import { supabaseAuthEnabled } from "@/lib/supabase/auth";
 import { listNotificationsForUser, markTaskNotificationsRead } from "@/lib/notifications/store";
 import { assignWarmupSequence } from "@/lib/automations/warmup";
 import { getAutomationStatus } from "@/lib/automations/scheduler";
+import { configurableAppsFor } from "@/lib/os/apps";
 
 const actionSchema = z.object({
   type: z.string(),
@@ -42,7 +43,7 @@ const deleteLeadPayloadSchema = z.object({ leadId: z.string().min(1) });
 const osAppSchema = z.enum(["leads", "management", "content", "routines", "settings", "team"]);
 const updateUserAccessSchema = z.object({ userId: z.string().min(1), appPermissions: z.array(osAppSchema).max(6), autoAssignEnabled: z.boolean() });
 const taskPayloadSchema = z.object({ taskId: z.string().min(1) });
-const rescheduleTaskPayloadSchema = taskPayloadSchema.extend({ dueAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) });
+const rescheduleTaskPayloadSchema = taskPayloadSchema.extend({ dueAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), dueTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/).optional() });
 const callResultPayloadSchema = z.object({
   leadId: z.string().min(1),
   ownerId: z.string().min(1),
@@ -55,10 +56,10 @@ const callResultPayloadSchema = z.object({
 const createUserPayloadSchema = z.object({
   fullName: z.string().trim().min(2).max(120),
   email: z.string().email(),
-  role: z.enum(["Руководитель", "РОП", "Менеджер", "Аккаунт-менеджер", "Технический специалист"]),
+  role: z.enum(["Руководитель", "Менеджер по продажам", "Технический специалист"]),
   position: z.string().trim().min(2).max(120),
   password: z.string()
-    .min(10, "Пароль должен содержать минимум 10 символов.")
+    .min(8, "Пароль должен содержать минимум 8 символов.")
     .max(128)
     .regex(/[a-zа-я]/i, "Добавьте в пароль буквы.")
     .regex(/\d/, "Добавьте в пароль цифру.")
@@ -266,7 +267,7 @@ export async function POST(request: Request) {
   const responseCurrentUser = state.users.find((user) => user.id === currentUser.id) ?? currentUser;
   const refreshedFullState = await getCrmStateAsync();
   const responseMetrics = dashboardMetrics(refreshedFullState);
-  if (responseCurrentUser.role === "Менеджер" || responseCurrentUser.role === "РОП" || responseCurrentUser.role === "Технический специалист") {
+  if (responseCurrentUser.role === "Менеджер по продажам" || responseCurrentUser.role === "Технический специалист") {
     responseMetrics.paidRevenue = 0;
     responseMetrics.mrr = 0;
     responseMetrics.churn = 0;
@@ -282,7 +283,7 @@ export async function POST(request: Request) {
     salesMetrics: salesPeriodMetrics(refreshedFullState, responseCurrentUser),
     notifications: await listNotificationsForUser(currentUser.id),
     automationStatus: await getAutomationStatus(),
-    auditLog: responseCurrentUser.role === "Руководитель" || responseCurrentUser.role === "РОП" ? await listSecurityAudit(30) : []
+    auditLog: responseCurrentUser.role === "Руководитель" ? await listSecurityAudit(30) : []
   });
 }
 
@@ -290,7 +291,10 @@ function canRunAction(user: CrmUser, action: CrmAction, state: Awaited<ReturnTyp
   if (action.type === "import_sip_call" || action.type === "connect_lead") return false;
   if (action.type === "update_user_access") {
     const target = state.users.find((item) => item.id === action.payload.userId);
-    return user.role === "Руководитель" && Boolean(target) && target?.role !== "Руководитель";
+    if (user.role !== "Руководитель" || !target || target.role === "Руководитель") return false;
+    const allowedApps = new Set(configurableAppsFor(target.role).map((app) => app.id));
+    return action.payload.appPermissions.every((app) => allowedApps.has(app))
+      && (!action.payload.autoAssignEnabled || target.role === "Менеджер по продажам");
   }
   if (action.type === "update_owner_profile") {
     return user.role === "Руководитель" && action.payload.userId === user.id;
@@ -301,7 +305,7 @@ function canRunAction(user: CrmUser, action: CrmAction, state: Awaited<ReturnTyp
   }
   if (user.role === "Руководитель") return true;
   if (action.type === "create_user") {
-    return user.role === "РОП" && (action.payload.role === "Менеджер" || action.payload.role === "Аккаунт-менеджер");
+    return false;
   }
   if (
     action.type === "create_warmup_sequence"
@@ -310,14 +314,13 @@ function canRunAction(user: CrmUser, action: CrmAction, state: Awaited<ReturnTyp
     || action.type === "create_warmup_step"
     || action.type === "update_warmup_step"
     || action.type === "delete_warmup_step"
-  ) return user.role === "РОП";
-  if (user.role === "РОП") return action.type !== "toggle_integration" && action.type !== "configure_integration";
+  ) return false;
   if (user.role === "Технический специалист" && (action.type === "toggle_integration" || action.type === "configure_integration")) return true;
   if (action.type === "assign_lead" || action.type === "toggle_integration" || action.type === "configure_integration" || action.type === "run_automation") {
     return false;
   }
 
-  if (action.type === "create_lead") return user.role === "Менеджер" && action.payload.ownerId === user.id;
+  if (action.type === "create_lead") return user.role === "Менеджер по продажам" && action.payload.ownerId === user.id;
   if (action.type === "delete_lead") return false;
 
   if (action.type === "complete_task" || action.type === "cancel_task" || action.type === "reschedule_task") {
@@ -331,7 +334,6 @@ function canRunAction(user: CrmUser, action: CrmAction, state: Awaited<ReturnTyp
   if (leadId) {
     const lead = state.leads.find((item) => item.id === leadId);
     if (!lead || lead.ownerId !== user.id) return false;
-    if (user.role === "Аккаунт-менеджер" && lead.status !== "client") return false;
     if (action.type === "update_lead" && action.payload.changes.ownerId && action.payload.changes.ownerId !== user.id) return false;
   }
   return true;

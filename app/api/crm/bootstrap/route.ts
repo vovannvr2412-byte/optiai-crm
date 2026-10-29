@@ -26,7 +26,7 @@ export async function GET(request: Request) {
   }
   const state = await scopedStateForAsync(userId);
   const metrics = dashboardMetrics(fullState);
-  if (currentUser.role === "Менеджер" || currentUser.role === "РОП" || currentUser.role === "Технический специалист") {
+  if (currentUser.role === "Менеджер по продажам" || currentUser.role === "Технический специалист") {
     metrics.paidRevenue = 0;
     metrics.mrr = 0;
     metrics.churn = 0;
@@ -43,6 +43,6 @@ export async function GET(request: Request) {
     salesMetrics: salesPeriodMetrics(fullState, currentUser),
     notifications: await listNotificationsForUser(currentUser.id),
     automationStatus: await getAutomationStatus(),
-    auditLog: currentUser.role === "Руководитель" || currentUser.role === "РОП" ? await listSecurityAudit(30) : []
+    auditLog: currentUser.role === "Руководитель" ? await listSecurityAudit(30) : []
   });
 }

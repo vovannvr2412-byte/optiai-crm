@@ -38,6 +38,9 @@ const externalIntegrations = await sql("supabase/migrations/0008_external_integr
 const warmupAndAi = await sql("supabase/migrations/0009_warmup_editor_and_ai.sql");
 const aiAutopilot = await sql("supabase/migrations/0010_ai_messaging_autopilot.sql");
 const operationsOs = await sql("supabase/migrations/0011_operations_os.sql");
+const threeRoleModel = await sql("supabase/migrations/0012_three_role_model.sql");
+const contentModuleInstaller = await sql("supabase/migrations/0013_content_module_installer.sql");
+const moscowBusinessTime = await sql("supabase/migrations/0014_moscow_business_time.sql");
 const seed = await sql("supabase/seed.sql");
 
 await db.exec(initial);
@@ -78,6 +81,19 @@ await db.exec(aiAutopilot);
 await db.exec(aiAutopilot);
 await db.exec(operationsOs);
 await db.exec(operationsOs);
+await db.exec(threeRoleModel);
+await db.exec(threeRoleModel);
+await db.exec(contentModuleInstaller);
+await db.exec(contentModuleInstaller);
+await db.exec(moscowBusinessTime);
+await db.exec(moscowBusinessTime);
+
+const warmupStartedAtDefault = await db.query(`
+  select column_default as expression
+  from information_schema.columns
+  where table_schema = 'public' and table_name = 'warmup_assignments' and column_name = 'started_at'
+`);
+assert.match(String(warmupStartedAtDefault.rows[0]?.expression ?? ""), /Europe\/Moscow/);
 
 const upgradedAssignments = await db.query(`
   select id, status, started_at::text as started_at
@@ -177,6 +193,10 @@ const pushPolicies = await db.query("select policyname from pg_policies where sc
 assert(pushPolicies.rows.some((row) => row.policyname === "users read own push subscriptions"));
 const operationsTables = await db.query("select table_name from information_schema.tables where table_schema = 'public' and table_name in ('os_user_settings', 'lead_os_profiles', 'lead_activation_checks', 'client_documents', 'optiai_events', 'routines_workspace')");
 assert.equal(operationsTables.rows.length, 6);
+const contentModuleTable = await db.query("select count(*)::integer as count from information_schema.tables where table_schema = 'public' and table_name = 'content_module_installations'");
+assert.equal(contentModuleTable.rows[0].count, 1);
+const contentModuleBucket = await db.query("select public, file_size_limit from storage.buckets where id = 'content-modules'");
+assert.deepEqual(contentModuleBucket.rows, [{ public: false, file_size_limit: 41943040 }]);
 const operationsStages = await db.query("select stage_order, name from public.pipeline_stages order by stage_order");
 assert.equal(operationsStages.rows.length, 7);
 assert.deepEqual(operationsStages.rows.map((row) => row.name), ["Новый лид", "Прогрев", "Планирует оплату", "Оплата и подключение", "Подключён", "Не продлил подписку", "Отказ"]);
@@ -205,5 +225,5 @@ await db.query("update public.automation_events set status = 'completed', proces
 const completedClaim = await db.query(claimSql, eventArguments);
 assert.equal(completedClaim.rows.length, 0);
 
-console.log("Migrations OK: schema is repeatable, messenger channels and Web Push are ready, sync exports are idempotent, scheduler events are idempotent, RLS policies exist, and normalized CRM state round-trips correctly.");
+console.log("Migrations OK: schema is repeatable, messenger channels, Web Push, the content module installer and scheduler are ready, RLS policies exist, and normalized CRM state round-trips correctly.");
 await db.close();

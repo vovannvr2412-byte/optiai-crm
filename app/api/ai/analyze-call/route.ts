@@ -22,8 +22,7 @@ export async function POST(request: Request) {
   const lead = state.leads.find((item) => item.id === parsed.data.leadId);
   if (!user || !lead) return NextResponse.json({ error: "Лид или сотрудник не найден." }, { status: 404 });
   const canAccess = user.role === "Руководитель"
-    || user.role === "РОП"
-    || (lead.ownerId === user.id && (user.role !== "Аккаунт-менеджер" || lead.status === "client"));
+    || lead.ownerId === user.id;
   if (!canAccess) return NextResponse.json({ error: "Недостаточно прав для анализа этого лида." }, { status: 403 });
 
   try {

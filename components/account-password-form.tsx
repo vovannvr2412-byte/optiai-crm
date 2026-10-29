@@ -40,10 +40,10 @@ export function AccountPasswordForm({ onSuccess, onCancel }: { onSuccess: () => 
     <form onSubmit={submit} className="grid gap-4">
       <div>
         <h2 className="pr-12 text-xl font-bold text-[#202939]">Новый пароль</h2>
-        <p className="mt-1 text-sm leading-5 text-slate-600">Минимум 10 символов, включая буквы и цифры. После сохранения потребуется войти заново.</p>
+        <p className="mt-1 text-sm leading-5 text-slate-600">Минимум 8 символов, включая буквы и цифры. После сохранения потребуется войти заново.</p>
       </div>
-      <label className="ui-label">Пароль<input value={password} onChange={(event) => setPassword(event.target.value)} type="password" autoComplete="new-password" minLength={10} required className="ui-field" /></label>
-      <label className="ui-label">Повторите пароль<input value={confirmation} onChange={(event) => setConfirmation(event.target.value)} type="password" autoComplete="new-password" minLength={10} required className="ui-field" /></label>
+      <label className="ui-label">Пароль<input value={password} onChange={(event) => setPassword(event.target.value)} type="password" autoComplete="new-password" minLength={8} maxLength={128} required className="ui-field" /></label>
+      <label className="ui-label">Повторите пароль<input value={confirmation} onChange={(event) => setConfirmation(event.target.value)} type="password" autoComplete="new-password" minLength={8} maxLength={128} required className="ui-field" /></label>
       {message && <div role="status" className="rounded-lg border border-[#DCE2EA] bg-slate-50 p-3 text-sm text-slate-700">{message}</div>}
       <div className="flex flex-wrap gap-2">
         <button disabled={submitting} className="ui-button ui-button-primary">{submitting ? "Сохраняем..." : "Сменить пароль"}</button>

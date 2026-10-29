@@ -1,4 +1,5 @@
 import { createServiceSupabaseClient } from "@/lib/supabase/server";
+import { moscowDateKey } from "@/lib/time/moscow";
 
 export async function assignWarmupSequence(leadId: string, sequenceId: string, assignedBy: string) {
   const supabase = createServiceSupabaseClient();
@@ -14,7 +15,7 @@ export async function assignWarmupSequence(leadId: string, sequenceId: string, a
     sequence_id: sequenceId,
     assigned_by: assignedBy,
     status: "active",
-    started_at: new Date().toISOString().slice(0, 10)
+    started_at: moscowDateKey()
   }).select("id").single();
   if (error) throw error;
   return String(data.id);

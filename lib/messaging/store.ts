@@ -99,10 +99,10 @@ function toMessage(row: unknown): MessengerMessage {
 }
 
 function canAccessConversation(user: CrmUser, conversation: MessengerConversation, leads: Lead[]) {
-  if (user.role === "Руководитель" || user.role === "РОП") return true;
+  if (user.role === "Руководитель") return true;
   const lead = conversation.leadId ? leads.find((item) => item.id === conversation.leadId) : undefined;
   if (!lead || lead.ownerId !== user.id) return false;
-  return user.role !== "Аккаунт-менеджер" || lead.status === "client";
+  return true;
 }
 
 async function accessContext(userId: string) {
@@ -261,7 +261,7 @@ export async function markConversationRead(userId: string, conversationId: strin
 
 export async function updateConversationForUser(userId: string, conversationId: string, changes: { leadId?: string | null; ownerId?: string | null; notes?: string; status?: MessengerConversation["status"]; aiMode?: MessengerConversation["aiMode"] }) {
   const [{ state, user }, conversation] = await Promise.all([accessContext(userId), getConversationForUser(userId, conversationId)]);
-  if ((changes.leadId !== undefined || changes.ownerId !== undefined) && user.role !== "Руководитель" && user.role !== "РОП") throw new Error("Связь с лидом может изменить руководитель или РОП.");
+  if ((changes.leadId !== undefined || changes.ownerId !== undefined) && user.role !== "Руководитель") throw new Error("Связь с лидом может изменить только руководитель.");
   if (changes.leadId && !state.leads.some((item) => item.id === changes.leadId)) throw new Error("Выбранный лид не найден.");
   if (changes.ownerId && !state.users.some((item) => item.id === changes.ownerId && item.status === "active")) throw new Error("Выбранный сотрудник недоступен.");
   const updatedAt = new Date().toISOString();
@@ -285,6 +285,27 @@ export async function updateConversationForUser(userId: string, conversationId: 
   if (changes.status !== undefined) payload.status = changes.status;
   if (changes.aiMode !== undefined) payload.ai_mode = changes.aiMode;
   const { data, error } = await createServiceSupabaseClient().from("messenger_conversations").update(payload).eq("id", conversationId).select("*").single();
+  if (error) throw error;
+  return toConversation(data);
+}
+
+export async function linkConversationToLeadSystem(conversationId: string, leadId: string, ownerId: string) {
+  const updatedAt = new Date().toISOString();
+  if (!supabasePersistenceEnabled()) {
+    return mutateLocal((snapshot) => {
+      const conversation = snapshot.conversations.find((item) => item.id === conversationId);
+      if (!conversation) throw new Error("Диалог не найден.");
+      conversation.leadId = leadId;
+      conversation.ownerId = ownerId;
+      conversation.updatedAt = updatedAt;
+      return structuredClone(conversation);
+    });
+  }
+  const { data, error } = await createServiceSupabaseClient().from("messenger_conversations").update({
+    lead_id: leadId,
+    owner_id: ownerId,
+    updated_at: updatedAt
+  }).eq("id", conversationId).select("*").single();
   if (error) throw error;
   return toConversation(data);
 }
